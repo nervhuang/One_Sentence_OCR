@@ -2,6 +2,11 @@
 
 Windows OCR tool with a global hotkey and a draggable capture frame.
 
+## Requirements
+
+- **Windows 10 (version 1809 or later) or Windows 11**
+- Python 3.9 or newer
+
 ## Setup
 
 ```bash
