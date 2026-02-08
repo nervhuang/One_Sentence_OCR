@@ -25,4 +25,4 @@ python main.py
 
 - Default hotkey: Ctrl+F12 (editable in the app UI).
 - Minimize to tray; use the tray menu to show or exit.
-- OCR uses Windows 11 built-in engine via WinRT.
+- OCR uses Windows built-in engine via WinRT (Windows 10 version 1809+ or Windows 11).
