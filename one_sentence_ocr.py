@@ -84,12 +84,14 @@ class SelectionWindow(QWidget):
                 height = buffer.height()
                 ptr = buffer.bits()
                 ptr.setsize(buffer.byteCount())
-                arr = bytes(ptr.asstring())
+                arr = bytes(ptr)
                 
                 # Create PIL Image
                 pil_image = Image.frombytes('RGB', (width, height), arr, 'raw', 'BGRA')
                 
                 # Perform OCR
+                # Note: Default language is English. For other languages, install appropriate
+                # Tesseract language packs and modify the lang parameter (e.g., 'chi_sim' for Chinese)
                 try:
                     text = pytesseract.image_to_string(pil_image, lang='eng')
                     self.main_window.display_result(text)
