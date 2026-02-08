@@ -1,0 +1,5 @@
+keyboard
+mss
+pillow
+pystray
+winrt
