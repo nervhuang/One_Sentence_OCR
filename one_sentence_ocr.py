@@ -4,13 +4,42 @@ One Sentence OCR - A minimal OCR application with system tray support.
 """
 import sys
 import os
-from PyQt5.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QWidget, 
-                             QVBoxLayout, QLabel, QTextEdit, QPushButton, QMessageBox)
-from PyQt5.QtCore import Qt, QPoint, QRect
-from PyQt5.QtGui import QIcon, QPixmap, QCursor, QPainter, QPen, QColor
-import pytesseract
-from PIL import ImageGrab, Image
-import pyperclip
+
+# Check for required dependencies
+try:
+    from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QWidget
+    from PyQt5.QtWidgets import QVBoxLayout, QLabel, QTextEdit, QPushButton, QMessageBox
+    from PyQt5.QtCore import Qt, QPoint, QRect
+    from PyQt5.QtGui import QIcon, QPixmap, QCursor, QPainter, QPen, QColor
+except ImportError as e:
+    print(f"Error: Failed to import PyQt5: {e}")
+    print("\nPlease install PyQt5:")
+    print("  pip install PyQt5")
+    sys.exit(1)
+
+try:
+    import pytesseract
+except ImportError:
+    print("Error: Failed to import pytesseract")
+    print("\nPlease install pytesseract:")
+    print("  pip install pytesseract")
+    sys.exit(1)
+
+try:
+    from PIL import Image
+except ImportError:
+    print("Error: Failed to import PIL")
+    print("\nPlease install Pillow:")
+    print("  pip install Pillow")
+    sys.exit(1)
+
+try:
+    import pyperclip
+except ImportError:
+    print("Error: Failed to import pyperclip")
+    print("\nPlease install pyperclip:")
+    print("  pip install pyperclip")
+    sys.exit(1)
 
 
 class SelectionWindow(QWidget):
