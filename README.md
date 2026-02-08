@@ -33,6 +33,24 @@ Download and install from: https://github.com/UB-Mannheim/tesseract/wiki
 
 ## Installation
 
+### Quick Install (Linux/macOS)
+
+Run the automated installation script:
+```bash
+git clone https://github.com/nervhuang/One_Sentence_OCR.git
+cd One_Sentence_OCR
+chmod +x install.sh
+./install.sh
+```
+
+The script will:
+- Verify Python and pip installation
+- Check for Tesseract OCR
+- Install Python dependencies
+- Run tests to verify the setup
+
+### Manual Installation
+
 1. Clone the repository:
 ```bash
 git clone https://github.com/nervhuang/One_Sentence_OCR.git
@@ -47,6 +65,11 @@ pip install -r requirements.txt
 Or install using setup.py:
 ```bash
 pip install -e .
+```
+
+3. Verify installation:
+```bash
+python3 test_setup.py
 ```
 
 ## Usage
