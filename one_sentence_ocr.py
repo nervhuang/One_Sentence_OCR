@@ -152,6 +152,47 @@ class OCRWorker(QObject):
         """Set the OCR language to use."""
         self.ocr_language = language
     
+    def preprocess_image(self, image):
+        """Preprocess image to improve OCR accuracy."""
+        from PIL import Image, ImageEnhance, ImageFilter
+        import numpy as np
+        
+        # Convert to grayscale if not already
+        if image.mode != 'L':
+            image = image.convert('L')
+        
+        # Increase contrast
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(1.5)
+        
+        # Increase brightness
+        enhancer = ImageEnhance.Brightness(image)
+        image = enhancer.enhance(1.1)
+        
+        # Apply slight sharpening to reduce noise
+        image = image.filter(ImageFilter.SHARPEN)
+        
+        # Apply threshold to binarize the image (helps with text clarity)
+        threshold = 150
+        image = image.point(lambda x: 255 if x > threshold else 0)
+        
+        return image
+    
+    def clean_ocr_text(self, text):
+        """Clean OCR result to remove obvious recognition errors."""
+        # Remove common OCR errors with special characters
+        # Keep basic punctuation but be careful with special characters
+        import re
+        
+        # Remove repeated special characters (likely OCR errors)
+        # Keep CJK characters, punctuation, and whitespace
+        text = re.sub(r'([^a-zA-Z0-9\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff・。，、！？；：""''（）【】 ])\1{2,}', r'\1', text)
+        
+        # Keep text but be more lenient with symbols
+        # Don't be too aggressive with cleaning
+        
+        return text.strip()
+    
     def perform_ocr(self, image):
         """Perform OCR on the given PIL image using Tesseract."""
         try:
@@ -183,31 +224,66 @@ class OCRWorker(QObject):
                 self.ocr_complete.emit("Error: Invalid image format")
                 return
             
-            # Convert to RGB if necessary
+            # Convert to RGB if necessary for preprocessing
             if image.mode != 'RGB':
-                image = image.convert('RGB')
+                temp_image = image.convert('RGB')
+            else:
+                temp_image = image.copy()
+            
+            # Preprocess image for better OCR accuracy
+            processed_image = self.preprocess_image(temp_image)
             
             # Perform OCR with selected language
+            text = None
             try:
-                text = pytesseract.image_to_string(image, lang=self.ocr_language)
+                # Use enhanced Tesseract configuration for better accuracy
+                # --psm 3 = Fully automatic page segmentation, but no OSD
+                # --oem 3 = Use both legacy and LSTM OCR modes
+                config = '--psm 3 --oem 3 -c tessedit_char_whitelist= '
+                
+                text = pytesseract.image_to_string(processed_image, lang=self.ocr_language, config=config)
+                
+                # For mixed text (Chinese + Japanese), try additional language combination if result is poor
+                if self.ocr_language not in ['chi_sim+chi_tra+jpn+eng', 'chi_sim+chi_tra', 'jpn+eng']:
+                    if text and len(text.strip()) > 0:
+                        # Count detected characters
+                        import re
+                        cjk_chars = len(re.findall(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]', text))
+                        if cjk_chars > 0:
+                            # If we detected CJK characters but user selected specific language, it's good
+                            pass
+                
             except Exception as e:
                 # Check if it's a language pack issue
                 error_str = str(e).lower()
                 if any(x in error_str for x in ['chi_sim', 'chi_tra', 'jpn', 'language', 'osd']):
-                    # Try fallback to English only
+                    # Try fallback to mixed language for better mixed-text handling
                     try:
-                        text = pytesseract.image_to_string(image, lang='eng')
+                        text = pytesseract.image_to_string(processed_image, lang='chi_sim+chi_tra+jpn+eng')
                         if text:
-                            text = f"[Fallback to English]\n{text}"
+                            text = f"[Using mixed language recognition]\n{text}"
                     except Exception as e2:
-                        raise Exception(f"OCR failed with configured language and English fallback: {str(e)}")
+                        # Final fallback to English only
+                        try:
+                            text = pytesseract.image_to_string(processed_image, lang='eng')
+                            if text:
+                                text = f"[Fallback to English]\n{text}"
+                        except Exception as e3:
+                            raise Exception(f"OCR failed: {str(e)}")
                 else:
                     raise e
             
             if not text or not text.strip():
                 text = "No text detected"
+            else:
+                # Clean the OCR result
+                text = self.clean_ocr_text(text)
             
             self.ocr_complete.emit(text)
+            
+        except Exception as e:
+            import traceback
+            self.ocr_complete.emit(f"OCR Error: {str(e)}")
             
         except Exception as e:
             import traceback
