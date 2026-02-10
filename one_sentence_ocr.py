@@ -93,14 +93,32 @@ def load_options_from_config():
             
             if 'options' in config:
                 remove_newlines = config['options'].get('remove_newlines', 'False')
-                return remove_newlines.lower() == 'true'
+                ocr_language = config['options'].get('ocr_language', 'chi_sim+eng')
+                return remove_newlines.lower() == 'true', ocr_language
     except (ValueError, KeyError, configparser.Error):
         pass
     
-    return False
+    return False, 'chi_sim+eng'
 
 
-def save_options_to_config(remove_newlines):
+def load_ocr_language_from_config():
+    """Load OCR language setting from config.ini"""
+    config = configparser.ConfigParser()
+    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    
+    try:
+        if os.path.exists(config_path):
+            config.read(config_path)
+            
+            if 'options' in config:
+                return config['options'].get('ocr_language', 'chi_sim+eng')
+    except (ValueError, KeyError, configparser.Error):
+        pass
+    
+    return 'chi_sim+eng'
+
+
+def save_options_to_config(remove_newlines, ocr_language='chi_sim+eng'):
     """Save options to config.ini"""
     config = configparser.ConfigParser()
     config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
@@ -113,8 +131,9 @@ def save_options_to_config(remove_newlines):
     if 'options' not in config:
         config['options'] = {}
     
-    # Update option
+    # Update options
     config['options']['remove_newlines'] = str(remove_newlines)
+    config['options']['ocr_language'] = str(ocr_language)
     
     # Write to file
     with open(config_path, 'w') as f:
@@ -124,6 +143,14 @@ def save_options_to_config(remove_newlines):
 class OCRWorker(QObject):
     """Worker class for performing OCR using Tesseract OCR."""
     ocr_complete = pyqtSignal(str)
+    
+    def __init__(self):
+        super().__init__()
+        self.ocr_language = load_ocr_language_from_config()
+    
+    def set_language(self, language):
+        """Set the OCR language to use."""
+        self.ocr_language = language
     
     def perform_ocr(self, image):
         """Perform OCR on the given PIL image using Tesseract."""
@@ -160,19 +187,20 @@ class OCRWorker(QObject):
             if image.mode != 'RGB':
                 image = image.convert('RGB')
             
-            # Perform OCR with explicit configuration
+            # Perform OCR with selected language
             try:
-                # Try with Chinese + English
-                text = pytesseract.image_to_string(image, lang='chi_sim+eng')
+                text = pytesseract.image_to_string(image, lang=self.ocr_language)
             except Exception as e:
                 # Check if it's a language pack issue
                 error_str = str(e).lower()
-                if any(x in error_str for x in ['chi_sim', 'chi_tra', 'language', 'osd']):
-                    # Fallback to English only
+                if any(x in error_str for x in ['chi_sim', 'chi_tra', 'jpn', 'language', 'osd']):
+                    # Try fallback to English only
                     try:
                         text = pytesseract.image_to_string(image, lang='eng')
+                        if text:
+                            text = f"[Fallback to English]\n{text}"
                     except Exception as e2:
-                        raise Exception(f"English OCR also failed: {str(e2)}")
+                        raise Exception(f"OCR failed with configured language and English fallback: {str(e)}")
                 else:
                     raise e
             
@@ -511,11 +539,12 @@ class OCRWindow(QMainWindow):
         self.dragging = False
         self.offset = QPoint()
         
-        # Load remove newlines option from config
-        self.remove_newlines = load_options_from_config()
+        # Load options from config
+        self.remove_newlines, self.ocr_language = load_options_from_config()
         
         # Initialize OCR worker
         self.ocr_worker = OCRWorker()
+        self.ocr_worker.set_language(self.ocr_language)
         self.ocr_worker.ocr_complete.connect(self.display_result)
         
         self.init_ui()
@@ -548,6 +577,31 @@ class OCRWindow(QMainWindow):
         self.remove_newlines_action.setCheckable(True)
         self.remove_newlines_action.setChecked(self.remove_newlines)
         self.remove_newlines_action.triggered.connect(self.toggle_remove_newlines)
+        
+        option_menu.addSeparator()
+        
+        # Add language submenu
+        language_menu = option_menu.addMenu('Language')
+        
+        # Language options
+        self.language_actions = {}
+        languages = {
+            'Simplified Chinese': 'chi_sim',
+            'Simplified Chinese + English': 'chi_sim+eng',
+            'Traditional Chinese': 'chi_tra',
+            'Traditional Chinese + English': 'chi_tra+eng',
+            'Japanese': 'jpn',
+            'Japanese + English': 'jpn+eng',
+            'English': 'eng',
+            'Multi-language (Sim + Tra + Jpn + Eng)': 'chi_sim+chi_tra+jpn+eng'
+        }
+        
+        for label, lang_code in languages.items():
+            action = language_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(self.ocr_language == lang_code)
+            action.triggered.connect(lambda checked, lang=lang_code, lbl=label: self.set_ocr_language(lang, lbl))
+            self.language_actions[lang_code] = action
         
         # Main layout
         main_widget = QWidget()
@@ -585,14 +639,32 @@ class OCRWindow(QMainWindow):
         """Toggle the remove newlines option."""
         self.remove_newlines = self.remove_newlines_action.isChecked()
         # Save the option to config.ini immediately
-        save_options_to_config(self.remove_newlines)
+        save_options_to_config(self.remove_newlines, self.ocr_language)
+    
+    def set_ocr_language(self, language, label):
+        """Set the OCR language."""
+        self.ocr_language = language
+        self.ocr_worker.set_language(language)
+        
+        # Uncheck all language actions and check the selected one
+        for action in self.language_actions.values():
+            action.setChecked(False)
+        if language in self.language_actions:
+            self.language_actions[language].setChecked(True)
+        
+        # Save the language to config.ini immediately
+        save_options_to_config(self.remove_newlines, language)
+        
+        # Show confirmation
+        self.text_display.setPlainText(f"Language changed to: {label}")
         
 
     
     def start_capture(self):
         """Start the screen area selection process."""
-        # Reload remove newlines option from config before capturing
-        self.remove_newlines = load_options_from_config()
+        # Reload options from config before capturing
+        self.remove_newlines, self.ocr_language = load_options_from_config()
+        self.ocr_worker.set_language(self.ocr_language)
         self.remove_newlines_action.setChecked(self.remove_newlines)
         
         self.hide()
