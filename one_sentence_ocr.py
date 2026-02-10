@@ -6,6 +6,8 @@ Captures selected screen area and copies to clipboard.
 import sys
 import os
 import threading
+import configparser
+from datetime import datetime
 
 # Set Tesseract path BEFORE importing pytesseract
 os.environ['TESSDATA_PREFIX'] = r'C:\Program Files\Tesseract-OCR\tessdata'
@@ -18,12 +20,105 @@ except ImportError:
     pass
 
 from PyQt5.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QWidget, 
-                             QVBoxLayout, QLabel, QPushButton, QMessageBox, QTextEdit)
-from PyQt5.QtCore import Qt, QPoint, QRect, pyqtSignal, QObject
+                             QVBoxLayout, QLabel, QPushButton, QMessageBox, QTextEdit, QMenuBar, QMainWindow)
+from PyQt5.QtCore import Qt, QPoint, QRect, pyqtSignal, QObject, QEvent
 from PyQt5.QtGui import QIcon, QPixmap, QCursor, QPainter, QPen, QColor
 from PIL import Image
 import pyperclip
 import io
+
+
+def save_selection_to_config(x, y, width, height, remove_newlines=None):
+    """Save the selection box dimensions and options to config.ini"""
+    config = configparser.ConfigParser()
+    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    
+    # Read existing config or create new one
+    if os.path.exists(config_path):
+        config.read(config_path)
+    else:
+        config['selection'] = {}
+    
+    # Ensure sections exist
+    if 'selection' not in config:
+        config['selection'] = {}
+    if 'options' not in config:
+        config['options'] = {}
+    
+    # Update selection values
+    config['selection']['x'] = str(x)
+    config['selection']['y'] = str(y)
+    config['selection']['width'] = str(width)
+    config['selection']['height'] = str(height)
+    config['selection']['last_updated'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Update options if provided
+    if remove_newlines is not None:
+        config['options']['remove_newlines'] = str(remove_newlines)
+    
+    # Write to file
+    with open(config_path, 'w') as f:
+        config.write(f)
+
+
+def load_selection_from_config():
+    """Load the last selection box dimensions from config.ini"""
+    config = configparser.ConfigParser()
+    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    
+    try:
+        if os.path.exists(config_path):
+            config.read(config_path)
+            
+            if 'selection' in config:
+                x = int(config['selection'].get('x', 0))
+                y = int(config['selection'].get('y', 0))
+                width = int(config['selection'].get('width', 640))
+                height = int(config['selection'].get('height', 360))
+                return (x, y, width, height)
+    except (ValueError, KeyError, configparser.Error):
+        pass
+    
+    return None
+
+
+def load_options_from_config():
+    """Load options from config.ini"""
+    config = configparser.ConfigParser()
+    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    
+    try:
+        if os.path.exists(config_path):
+            config.read(config_path)
+            
+            if 'options' in config:
+                remove_newlines = config['options'].get('remove_newlines', 'False')
+                return remove_newlines.lower() == 'true'
+    except (ValueError, KeyError, configparser.Error):
+        pass
+    
+    return False
+
+
+def save_options_to_config(remove_newlines):
+    """Save options to config.ini"""
+    config = configparser.ConfigParser()
+    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    
+    # Read existing config
+    if os.path.exists(config_path):
+        config.read(config_path)
+    
+    # Ensure options section exists
+    if 'options' not in config:
+        config['options'] = {}
+    
+    # Update option
+    config['options']['remove_newlines'] = str(remove_newlines)
+    
+    # Write to file
+    with open(config_path, 'w') as f:
+        config.write(f)
 
 
 class OCRWorker(QObject):
@@ -95,32 +190,57 @@ class SelectionWindow(QWidget):
     """Window for selecting a screen area for OCR with draggable and resizable frame."""
     
     HANDLE_SIZE = 8
+    screenshot_ready = pyqtSignal(QPixmap)
     
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
+        self.screenshot = None
+        self.screenshot_ready.connect(self._on_screenshot_ready)
         
-        # Capture the entire screen first
-        screen = QApplication.primaryScreen()
-        self.screenshot = screen.grabWindow(0)
-        
-        # Set window flags and geometry
+        # Set window flags and geometry FIRST
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setMouseTracking(True)  # Enable mouseMoveEvent without button press
         
         # Set geometry to match screen
+        screen = QApplication.primaryScreen()
         screen_geometry = screen.geometry()
         self.setGeometry(screen_geometry)
         
-        # Create default selection rectangle (centered, 50% of screen)
-        screen_width = screen_geometry.width()
-        screen_height = screen_geometry.height()
-        default_w = int(screen_width * 0.5)
-        default_h = int(screen_height * 0.5)
-        default_x = int((screen_width - default_w) / 2)
-        default_y = int((screen_height - default_h) / 2)
+        # Capture screenshot in background thread to avoid blocking
+        def capture_screenshot():
+            screenshot = screen.grabWindow(0)
+            self.screenshot_ready.emit(screenshot)
         
-        self.selection_rect = QRect(default_x, default_y, default_w, default_h)
+        thread = threading.Thread(target=capture_screenshot, daemon=True)
+        thread.start()
+        
+        # Try to load last selection from config
+        saved_selection = load_selection_from_config()
+        
+        if saved_selection:
+            # Use saved selection, but clamp to screen bounds
+            x, y, width, height = saved_selection
+            screen_width = screen_geometry.width()
+            screen_height = screen_geometry.height()
+            
+            # Validate and clamp to screen
+            x = max(0, min(x, screen_width - 20))
+            y = max(0, min(y, screen_height - 20))
+            width = max(20, min(width, screen_width - x))
+            height = max(20, min(height, screen_height - y))
+            
+            self.selection_rect = QRect(x, y, width, height)
+        else:
+            # Create default selection rectangle (centered, 50% of screen)
+            screen_width = screen_geometry.width()
+            screen_height = screen_geometry.height()
+            default_w = int(screen_width * 0.5)
+            default_h = int(screen_height * 0.5)
+            default_x = int((screen_width - default_w) / 2)
+            default_y = int((screen_height - default_h) / 2)
+            
+            self.selection_rect = QRect(default_x, default_y, default_w, default_h)
         
         # Mouse interaction states
         self.dragging = False
@@ -128,6 +248,11 @@ class SelectionWindow(QWidget):
         self.resize_edge = None
         self.drag_start = QPoint()
         self.resize_edge = None  # 'tl', 'tr', 'bl', 'br', 'top', 'bottom', 'left', 'right'
+        
+    def _on_screenshot_ready(self, screenshot):
+        """Called when screenshot is ready from background thread."""
+        self.screenshot = screenshot
+        self.update()  # Trigger repaint
         
     def get_handle_rects(self):
         """Get rects for all resize handles."""
@@ -189,34 +314,45 @@ class SelectionWindow(QWidget):
     def paintEvent(self, event):
         """Draw the selection rectangle with handles."""
         painter = QPainter(self)
-        # Draw screenshot
-        painter.drawPixmap(self.rect(), self.screenshot)
         
-        # Draw semi-transparent overlay everywhere except the selection
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 100))
+        # Only draw if screenshot is ready
+        if self.screenshot:
+            # Draw screenshot
+            painter.drawPixmap(self.rect(), self.screenshot)
+            
+            # Draw semi-transparent overlay everywhere except the selection
+            painter.fillRect(self.rect(), QColor(0, 0, 0, 100))
+            
+            # Draw the selected area with full brightness (redraw from screenshot)
+            painter.drawPixmap(self.selection_rect, self.screenshot, self.selection_rect)
+            
+            # Draw selection border (bright pink/magenta for visibility)
+            pen = QPen(QColor(255, 20, 147), 10)
+            painter.setPen(pen)
+            painter.drawRect(self.selection_rect)
+            
+            # Draw resize handles (bright pink with larger size)
+            painter.setPen(QPen(QColor(255, 20, 147), 3))
+            painter.setBrush(QColor(255, 20, 147))
+            handles = self.get_handle_rects()
+            for handle_rect in handles.values():
+                painter.drawRect(handle_rect)
+            
+            # Draw instruction text (bright pink)
+            painter.setPen(QPen(QColor(255, 20, 147)))
+            font = painter.font()
+            font.setPointSize(10)
+            painter.setFont(font)
+            painter.drawText(10, 30, 'Drag to move, drag handles to resize, Enter to confirm, Esc to cancel')
+        else:
+            # Show loading message while screenshot is being captured
+            painter.fillRect(self.rect(), QColor(50, 50, 50))
+            painter.setPen(QPen(QColor(255, 255, 255)))
+            font = painter.font()
+            font.setPointSize(12)
+            painter.setFont(font)
+            painter.drawText(self.rect(), Qt.AlignCenter, 'Capturing screen...')
         
-        # Draw the selected area with full brightness (redraw from screenshot)
-        painter.drawPixmap(self.selection_rect, self.screenshot, self.selection_rect)
-        
-        # Draw selection border (bright pink/magenta for visibility)
-        pen = QPen(QColor(255, 20, 147), 10)
-        painter.setPen(pen)
-        painter.drawRect(self.selection_rect)
-        
-        # Draw resize handles (bright pink with larger size)
-        painter.setPen(QPen(QColor(255, 20, 147), 3))
-        painter.setBrush(QColor(255, 20, 147))
-        handles = self.get_handle_rects()
-        for handle_rect in handles.values():
-            painter.drawRect(handle_rect)
-        
-        # Draw instruction text (bright pink)
-        painter.setPen(QPen(QColor(255, 20, 147)))
-        font = painter.font()
-        font.setPointSize(10)
-        painter.setFont(font)
-        painter.drawText(10, 30, 'Drag to move, drag handles to resize, Enter to confirm, Esc to cancel')
-    
     def mousePressEvent(self, event):
         """Handle mouse press for dragging or resizing."""
         if event.button() == Qt.LeftButton:
@@ -295,16 +431,16 @@ class SelectionWindow(QWidget):
         
         # Handle horizontal edges
         if edge in ['tl', 'tr', 'left', 'right', 'bl', 'br']:
-            if 'l' in edge or edge == 'left':
+            if edge in ['tl', 'bl', 'left']:
                 new_rect.setLeft(pos.x())
-            elif 'r' in edge or edge == 'right':
+            elif edge in ['tr', 'br', 'right']:
                 new_rect.setRight(pos.x())
         
         # Handle vertical edges
         if edge in ['tl', 'tr', 'top', 'bottom', 'bl', 'br']:
-            if 't' in edge or edge == 'top':
+            if edge in ['tl', 'tr', 'top']:
                 new_rect.setTop(pos.y())
-            elif 'b' in edge or edge == 'bottom':
+            elif edge in ['bl', 'br', 'bottom']:
                 new_rect.setBottom(pos.y())
         
         # Ensure minimum size and valid rect
@@ -320,9 +456,17 @@ class SelectionWindow(QWidget):
     
     def perform_ocr(self):
         """Perform OCR on the selected area."""
+        # Check if screenshot is ready
+        if not self.screenshot:
+            self.main_window.display_result("Error: Screenshot is still being captured, please wait a moment...")
+            return
+            
         if self.selection_rect.width() > 10 and self.selection_rect.height() > 10:
             x, y, w, h = (self.selection_rect.x(), self.selection_rect.y(), 
                          self.selection_rect.width(), self.selection_rect.height())
+            
+            # Save selection dimensions and options to config
+            save_selection_to_config(x, y, w, h, self.main_window.remove_newlines)
             
             # Capture the selected area
             img = self.screenshot.copy(x, y, w, h)
@@ -358,14 +502,17 @@ class SelectionWindow(QWidget):
         self.close()
 
 
-class OCRWindow(QWidget):
-    """Main draggable and resizable window for displaying OCR results."""
+class OCRWindow(QMainWindow):
+    """Main window for displaying OCR results."""
     
     def __init__(self, tray_icon):
         super().__init__()
         self.tray_icon = tray_icon
         self.dragging = False
         self.offset = QPoint()
+        
+        # Load remove newlines option from config
+        self.remove_newlines = load_options_from_config()
         
         # Initialize OCR worker
         self.ocr_worker = OCRWorker()
@@ -379,7 +526,33 @@ class OCRWindow(QWidget):
         self.setGeometry(100, 100, 400, 300)
         self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
         
-        layout = QVBoxLayout()
+        # Create File menu with actions
+        menu_bar = self.menuBar()
+        file_menu = menu_bar.addMenu('File')
+        
+        new_capture_action = file_menu.addAction('New Capture')
+        new_capture_action.triggered.connect(self.start_capture)
+        
+        minimize_action = file_menu.addAction('Minimize to Tray')
+        minimize_action.triggered.connect(self.hide)
+        
+        file_menu.addSeparator()
+        
+        close_action = file_menu.addAction('Close Application')
+        close_action.triggered.connect(self.close_application)
+        
+        # Create Option menu with actions
+        option_menu = menu_bar.addMenu('Option')
+        
+        self.remove_newlines_action = option_menu.addAction('Remove Newlines')
+        self.remove_newlines_action.setCheckable(True)
+        self.remove_newlines_action.setChecked(self.remove_newlines)
+        self.remove_newlines_action.triggered.connect(self.toggle_remove_newlines)
+        
+        # Main layout
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        layout = QVBoxLayout(main_widget)
         
         # Title label
         title_label = QLabel('OCR Result:')
@@ -392,83 +565,66 @@ class OCRWindow(QWidget):
         self.text_display.setPlaceholderText('OCR results will appear here...')
         layout.addWidget(self.text_display)
         
-        # Button layout
-        button_layout = QVBoxLayout()
-        
-        # Copy to clipboard button
-        self.copy_button = QPushButton('Copy to Clipboard')
-        self.copy_button.clicked.connect(self.copy_to_clipboard)
-        self.copy_button.setEnabled(False)
-        button_layout.addWidget(self.copy_button)
-        
-        # New capture button
-        self.capture_button = QPushButton('New Capture')
-        self.capture_button.clicked.connect(self.start_capture)
-        button_layout.addWidget(self.capture_button)
-        
-        # Close button
-        self.close_button = QPushButton('Minimize to Tray')
-        self.close_button.clicked.connect(self.hide)
-        button_layout.addWidget(self.close_button)
-        
-        layout.addLayout(button_layout)
-        self.setLayout(layout)
-        
     def display_result(self, text):
         """Display OCR result in the text area."""
+        # Process text if remove newlines option is enabled
+        if self.remove_newlines:
+            text = text.replace('\n', '')
+        
         self.text_display.setPlainText(text)
-        self.copy_button.setEnabled(bool(text.strip()))
+        
+        # Auto-copy result to clipboard
+        if text.strip():
+            pyperclip.copy(text)
+        
         self.show()
         self.raise_()
         self.activateWindow()
+    
+    def toggle_remove_newlines(self):
+        """Toggle the remove newlines option."""
+        self.remove_newlines = self.remove_newlines_action.isChecked()
+        # Save the option to config.ini immediately
+        save_options_to_config(self.remove_newlines)
         
-    def copy_to_clipboard(self):
-        """Copy the OCR result to clipboard."""
-        text = self.text_display.toPlainText()
-        if text:
-            pyperclip.copy(text)
-            QMessageBox.information(self, 'Success', 'Text copied to clipboard!')
+
     
     def start_capture(self):
         """Start the screen area selection process."""
+        # Reload remove newlines option from config before capturing
+        self.remove_newlines = load_options_from_config()
+        self.remove_newlines_action.setChecked(self.remove_newlines)
+        
         self.hide()
         self.selection_window = SelectionWindow(self)
         self.selection_window.show()
     
-    def mousePressEvent(self, event):
-        """Enable window dragging."""
-        if event.button() == Qt.LeftButton:
-            self.dragging = True
-            self.offset = event.pos()
-    
-    def mouseMoveEvent(self, event):
-        """Handle window dragging."""
-        if self.dragging:
-            self.move(self.pos() + event.pos() - self.offset)
-    
-    def mouseReleaseEvent(self, event):
-        """Stop window dragging."""
-        if event.button() == Qt.LeftButton:
-            self.dragging = False
+    def close_application(self):
+        """Close the application."""
+        import sys
+        sys.exit(0)
     
     def closeEvent(self, event):
-        """Handle window close event - minimize to tray instead."""
-        event.ignore()
-        self.hide()
-        self.tray_icon.showMessage(
-            'One Sentence OCR',
-            'Application minimized to system tray',
-            QSystemTrayIcon.Information,
-            2000
-        )
+        """Handle window close event - close the application."""
+        event.accept()
+        import sys
+        sys.exit(0)
 
 
 class SystemTrayApp:
     """Main application with system tray support."""
     
+    class HotkeySignals(QObject):
+        """Signal emitter for hotkey events."""
+        hotkey_pressed = pyqtSignal()
+    
     def __init__(self):
         self.app = QApplication(sys.argv)
         self.app.setQuitOnLastWindowClosed(False)
+        self.hotkey_signals = self.HotkeySignals()
+        
+        # Set Windows native style
+        self.app.setStyle('windowsvista')
         
         # Create system tray icon
         self.tray_icon = QSystemTrayIcon()
@@ -476,6 +632,12 @@ class SystemTrayApp:
         
         # Create main window
         self.window = OCRWindow(self.tray_icon)
+        
+        # Connect hotkey signal to capture method
+        self.hotkey_signals.hotkey_pressed.connect(self.start_capture)
+        
+        # Setup global hotkey listener (Ctrl+F12)
+        self.setup_global_hotkey()
         
     def setup_tray_icon(self):
         """Setup the system tray icon and menu."""
@@ -494,19 +656,19 @@ class SystemTrayApp:
         # Create tray menu
         tray_menu = QMenu()
         
-        # Show window action
-        show_action = tray_menu.addAction('Show Window')
-        show_action.triggered.connect(self.show_window)
-        
         # New capture action
         capture_action = tray_menu.addAction('New Capture')
         capture_action.triggered.connect(self.start_capture)
         
+        # Show window action
+        show_window_action = tray_menu.addAction('Show Window')
+        show_window_action.triggered.connect(self.show_window)
+        
         tray_menu.addSeparator()
         
-        # Quit action
-        quit_action = tray_menu.addAction('Quit')
-        quit_action.triggered.connect(self.quit_app)
+        # Close application action
+        close_action = tray_menu.addAction('Close Application')
+        close_action.triggered.connect(self.quit_app)
         
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.activated.connect(self.tray_icon_activated)
@@ -515,7 +677,17 @@ class SystemTrayApp:
     def tray_icon_activated(self, reason):
         """Handle tray icon click."""
         if reason == QSystemTrayIcon.Trigger:
-            self.show_window()
+            self.start_capture()
+    
+    def minimize_to_tray(self):
+        """Minimize the main window to tray."""
+        self.window.hide()
+        self.tray_icon.showMessage(
+            'One Sentence OCR',
+            'Application minimized to system tray',
+            QSystemTrayIcon.Information,
+            2000
+        )
     
     def show_window(self):
         """Show the main window."""
@@ -527,8 +699,42 @@ class SystemTrayApp:
         """Start a new screen capture."""
         self.window.start_capture()
     
+    def setup_global_hotkey(self):
+        """Setup Ctrl+F12 hotkey in a background thread."""
+        from pynput.keyboard import Key, Listener
+        
+        ctrl_pressed = False
+        
+        def on_press(key):
+            nonlocal ctrl_pressed
+            try:
+                if key == Key.ctrl_l or key == Key.ctrl_r:
+                    ctrl_pressed = True
+                elif key == Key.f12:
+                    if ctrl_pressed:
+                        # Emit signal to trigger capture in main thread
+                        self.hotkey_signals.hotkey_pressed.emit()
+            except AttributeError:
+                pass
+        
+        def on_release(key):
+            nonlocal ctrl_pressed
+            try:
+                if key == Key.ctrl_l or key == Key.ctrl_r:
+                    ctrl_pressed = False
+            except AttributeError:
+                pass
+        
+        # Create and start listener in background
+        listener = Listener(on_press=on_press, on_release=on_release)
+        listener.start()
+        self.hotkey_listener = listener
+    
     def quit_app(self):
         """Quit the application."""
+        # Stop the hotkey listener
+        if hasattr(self, 'hotkey_listener'):
+            self.hotkey_listener.stop()
         self.tray_icon.hide()
         self.app.quit()
     
@@ -536,9 +742,9 @@ class SystemTrayApp:
         """Run the application."""
         self.tray_icon.showMessage(
             'One Sentence OCR',
-            'Application started. Right-click the tray icon for options.',
+            'Application started. Use Ctrl+F12 to capture, or right-click tray icon.',
             QSystemTrayIcon.Information,
-            2000
+            3000
         )
         return self.app.exec_()
 
