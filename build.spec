@@ -1,4 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+
+# Use the project's virtual environment
+venv_path = r'D:\PycharmProjects\One_Sentence_OCR\.venv'
+site_packages = os.path.join(venv_path, r'Lib\site-packages')
+pyqt5_path = os.path.join(site_packages, 'PyQt5')
+
 a = Analysis(
     ['one_sentence_ocr.py'],
     pathex=[],
@@ -7,12 +14,18 @@ a = Analysis(
     ],
     datas=[
         (r'C:\Program Files\Tesseract-OCR\tessdata', 'tessdata'),
+        # Include PyQt5 plugins and libraries
+        (os.path.join(pyqt5_path, 'Qt5', 'plugins'), 'PyQt5/Qt5/plugins'),
+        (os.path.join(pyqt5_path, 'Qt5', 'bin'), 'PyQt5/Qt5/bin'),
+        (os.path.join(pyqt5_path, 'Qt5', 'qml'), 'PyQt5/Qt5/qml'),
+        (os.path.join(pyqt5_path, 'Qt5', 'translations'), 'PyQt5/Qt5/translations'),
     ],
     hiddenimports=[
         'PyQt5',
         'PyQt5.QtCore',
-        'PyQt5.QtGui',
+        'PyQt5.QtGui', 
         'PyQt5.QtWidgets',
+        'PyQt5.sip',
         'pytesseract',
         'pyperclip',
         'pynput',
