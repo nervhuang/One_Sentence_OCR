@@ -153,7 +153,7 @@ class OCRWorker(QObject):
         self.ocr_language = language
     
     def preprocess_image(self, image):
-        """Preprocess image to improve OCR accuracy."""
+        """Preprocess image to improve OCR accuracy, especially for Japanese text."""
         from PIL import Image, ImageEnhance, ImageFilter
         import numpy as np
         
@@ -161,37 +161,143 @@ class OCRWorker(QObject):
         if image.mode != 'L':
             image = image.convert('L')
         
-        # Increase contrast
+        # Enhance contrast more aggressively for small punctuation marks
         enhancer = ImageEnhance.Contrast(image)
-        image = enhancer.enhance(1.5)
+        image = enhancer.enhance(2.5)  # Increased for better punctuation clarity
         
-        # Increase brightness
+        # Increase brightness to help with light punctuation
         enhancer = ImageEnhance.Brightness(image)
-        image = enhancer.enhance(1.1)
+        image = enhancer.enhance(1.3)
         
-        # Apply slight sharpening to reduce noise
+        # Apply multiple sharpening passes for crisp punctuation
         image = image.filter(ImageFilter.SHARPEN)
+        image = image.filter(ImageFilter.SHARPEN)
+        image = image.filter(ImageFilter.EDGE_ENHANCE)
         
-        # Apply threshold to binarize the image (helps with text clarity)
-        threshold = 150
+        # Apply adaptive threshold for better punctuation detection
+        # Using lower threshold to catch smaller marks like ・
+        img_array = np.array(image)
+        
+        # Use median-based threshold
+        median_val = np.median(img_array)
+        threshold = int(median_val * 0.8)  # 80% of median for better punctuation
+        
         image = image.point(lambda x: 255 if x > threshold else 0)
         
         return image
     
+    def _get_symbol_correction_map(self):
+        """Get mapping of commonly misrecognized symbols."""
+        return {
+            # Japanese middle dot variations
+            '・': ['・', '·', '丶', '･', '。', '|', 'I', 'l', '1', '·', '▪', '■'],
+            
+            # Japanese punctuation
+            '。': ['。', '0', 'o', '●', '●', '0', '.', '。'],
+            '、': ['、', ',', ',,', ',', '，', '、'],
+            '！': ['！', '!', 'Ⅰ', 'I', '!'],
+            '？': ['？', '?', '？'],
+            
+            # Brackets and parentheses
+            '（': ['（', '(', '(', '(', '[', '【'],
+            '）': ['）', ')', ')', ')', ']', '】'],
+            '【': ['【', '[', '【', '『'],
+            '】': ['】', ']', '】', '』'],
+            
+            # Dashes and hyphens
+            '・': ['・', '-', '−', '─', '–', '—', '―'],
+            
+            # Stars and special chars
+            '☆': ['☆', '*', '★', '✩', '✪', '✨'],
+            '❤': ['❤', 'O', '0', 'Q', '@'],
+        }
+    
     def clean_ocr_text(self, text):
-        """Clean OCR result to remove obvious recognition errors."""
-        # Remove common OCR errors with special characters
-        # Keep basic punctuation but be careful with special characters
+        """Clean OCR result to remove obvious recognition errors and fix symbol misrecognition."""
         import re
         
-        # Remove repeated special characters (likely OCR errors)
-        # Keep CJK characters, punctuation, and whitespace
-        text = re.sub(r'([^a-zA-Z0-9\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff・。，、！？；：""''（）【】 ])\1{2,}', r'\1', text)
+        # Japanese punctuation and symbol error corrections
+        # These are learned from common OCR misrecognitions
         
-        # Keep text but be more lenient with symbols
-        # Don't be too aggressive with cleaning
+        # Most aggressive: replace obviously wrong sequences
+        # ・ (middle dot) is often misrecognized as: |, I, l, 1, ·, etc.
+        # Fix patterns where these clearly should be middle dots
+        text = re.sub(r'(?<=[ぁ-ん])[\|I1l`′](?=[ぁ-ん])', '・', text)  # Between hiragana
+        text = re.sub(r'(?<=[ァ-ヴ])[|I1l`′](?=[ァ-ヴ])', '・', text)   # Between katakana
+        text = re.sub(r'(?<=[ァ-ヴ])[\|I1l`′](?=・)', '・', text)        # Before existing middle dot
+        
+        # Period/Full stop errors: 。often becomes o, 0, O, ●
+        text = re.sub(r'(?<=[ぁ-ん])[o0O●]+(?=[\s\n]|$)', '。', text)    # After hiragana, end of line
+        text = re.sub(r'(?<=[ァ-ヴ])[o0O●]+(?=[\s\n]|$)', '。', text)    # After katakana, end of line
+        text = re.sub(r'(?<=[々〆〇〉》」』【・])[o0O●]+(?=[\s\n]|$)', '。', text)  # After various marks
+        
+        # Comma errors: 、often becomes comma or other marks
+        text = re.sub(r'(?<=[ぁ-ん])[,､,，]+(?=[ぁ-ん])', '、', text)    # Between hiragana
+        text = re.sub(r'(?<=[ァ-ヴ])[,､,，]+(?=[ァ-ヴ])', '、', text)    # Between katakana
+        
+        # Exclamation mark: ！often becomes I or !
+        text = re.sub(r'(?<=[ぁ-ん])[!Ⅰ|]+(?=[\s\n]|[ぁ-ん])', '!', text)  # After hiragana
+        text = re.sub(r'(?<=[ァ-ヴ])[!Ⅰ|]+(?=[\s\n]|[ァ-ヴ])', '!', text)  # After katakana
+        
+        # Question mark: ？often becomes ?
+        text = re.sub(r'[？?]+', '?', text)
+        
+        # Brackets: normalize variations
+        text = re.sub(r'[\(（【『]', '【', text)  # Open brackets to Japanese 【
+        text = re.sub(r'[\)）】』]', '】', text)  # Close brackets to Japanese 】
+        
+        # Fix square bracket confusions
+        text = re.sub(r'\[', '【', text)
+        text = re.sub(r'\]', '】', text)
+        
+        # Dash/hyphen: normalize
+        text = re.sub(r'[─〜～ー―\-−–—]', '・', text)  # To middle dot in context
+        
+        # Remove repeated special characters (likely OCR errors)
+        # But be careful with repeated Japanese punctuation which might be intentional
+        text = re.sub(r'([^\u3040-\u309f\u30a0-\u30ff])\1{3,}', r'\1\1', text)  # Keep only 2
+        
+        # Remove extreme repetitions of symbols that are clearly errors
+        text = re.sub(r'\|{2,}', '|', text)  # Multiple pipes to single
+        text = re.sub(r'[I1l]{3,}', 'I', text)  # Multiple I/1/l to single I
+        
+        # Clean up obvious OCR garbage
+        # Remove sequences of unrelated symbols
+        text = re.sub(r'[^a-zA-Z0-9\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff・。、！？；：""''（）【】， \t\n]', '', text)
+        
+        # Convert multiple spaces to single space
+        text = re.sub(r'[ \t]+', ' ', text)
+        
+        # Remove extra newlines but keep intentional ones
+        text = re.sub(r'\n\n+', '\n', text)
         
         return text.strip()
+    
+    def correct_symbol_errors(self, text):
+        """Attempt to correct symbol recognition errors using pattern matching."""
+        import re
+        
+        # For Japanese middle dot which is frequently misrecognized
+        # Pattern: anything that looks like it should be a middle dot
+        # Context: usually between words or at specific positions
+        
+        # Common misrecognitions of ・
+        misrecognized_patterns = {
+            # Looking for isolated characters or repeated simple marks that should be ・
+            r'[|Ⅰ`′](?=[\u3040-\u309f\u30a0-\u30ff]|\s|・)': '・',  # Before Japanese chars
+            r'(?<=[\u3040-\u309f\u30a0-\u30ff])[|Ⅰ`′](?=[\u3040-\u309f\u30a0-\u30ff])': '・',  # Between Japanese
+            
+            # Period-like errors
+            r'([oO0]+)(?=[\u3040-\u309f\u30a0-\u30ff]|$)': '。',  # End of line or before Japanese
+        }
+        
+        for pattern, replacement in misrecognized_patterns.items():
+            try:
+                text = re.sub(pattern, replacement, text)
+            except:
+                pass
+        
+        return text
     
     def perform_ocr(self, image):
         """Perform OCR on the given PIL image using Tesseract."""
@@ -236,10 +342,24 @@ class OCRWorker(QObject):
             # Perform OCR with selected language
             text = None
             try:
-                # Use enhanced Tesseract configuration for better accuracy
-                # --psm 3 = Fully automatic page segmentation, but no OSD
-                # --oem 3 = Use both legacy and LSTM OCR modes
-                config = '--psm 3 --oem 3 -c tessedit_char_whitelist= '
+                # Enhanced Tesseract configuration for better accuracy
+                # Especially optimized for Japanese punctuation and special characters
+                
+                # Determine optimal PSM based on language
+                # PSM 6 = Treat image as single uniform block of text
+                # PSM 3 = Fully automatic page segmentation
+                psm = '6' if 'jpn' in self.ocr_language else '3'
+                
+                # Build config with character preservation for punctuation
+                config = f'--psm {psm} --oem 3'
+                
+                # Add Tesseract options for better punctuation recognition
+                config += ' -c tesseract_create_pdf=0'
+                config += ' -c preserve_interword_spaces=0'
+                
+                # For Japanese specifically, use stricter settings
+                if 'jpn' in self.ocr_language:
+                    config += ' -c min_characters_to_try=1'
                 
                 text = pytesseract.image_to_string(processed_image, lang=self.ocr_language, config=config)
                 
@@ -278,6 +398,8 @@ class OCRWorker(QObject):
             else:
                 # Clean the OCR result
                 text = self.clean_ocr_text(text)
+                # Further correct symbol-specific errors
+                text = self.correct_symbol_errors(text)
             
             self.ocr_complete.emit(text)
             
