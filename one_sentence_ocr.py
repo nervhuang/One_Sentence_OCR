@@ -2,25 +2,17 @@
 """
 One Sentence OCR - A screenshot tool with system tray support.
 Captures selected screen area and copies to clipboard.
+Uses Windows OCR API for accurate text recognition.
 """
 import sys
 import os
 import threading
 import configparser
+import asyncio
 from datetime import datetime
 
-# Set Tesseract path BEFORE importing pytesseract
-os.environ['TESSDATA_PREFIX'] = r'C:\Program Files\Tesseract-OCR\tessdata'
-
-# Import and configure pytesseract early
-try:
-    import pytesseract
-    pytesseract.pytesseract.pytesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-except ImportError:
-    pass
-
 from PyQt5.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QWidget, 
-                             QVBoxLayout, QLabel, QPushButton, QMessageBox, QTextEdit, QMenuBar, QMainWindow)
+                             QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMessageBox, QTextEdit, QMenuBar, QMainWindow)
 from PyQt5.QtCore import Qt, QPoint, QRect, pyqtSignal, QObject, QEvent
 from PyQt5.QtGui import QIcon, QPixmap, QCursor, QPainter, QPen, QColor
 from PIL import Image
@@ -140,9 +132,65 @@ def save_options_to_config(remove_newlines, ocr_language='chi_sim+eng'):
         config.write(f)
 
 
+def save_window_geometry_to_config(x, y, width, height):
+    """Save window position and size to config.ini"""
+    config = configparser.ConfigParser()
+    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    
+    # Read existing config
+    if os.path.exists(config_path):
+        config.read(config_path)
+    
+    # Ensure window section exists
+    if 'window' not in config:
+        config['window'] = {}
+    
+    # Update window geometry
+    config['window']['x'] = str(x)
+    config['window']['y'] = str(y)
+    config['window']['width'] = str(width)
+    config['window']['height'] = str(height)
+    
+    # Write to file
+    with open(config_path, 'w') as f:
+        config.write(f)
+
+
+def load_window_geometry_from_config():
+    """Load window position and size from config.ini"""
+    config = configparser.ConfigParser()
+    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    
+    try:
+        if os.path.exists(config_path):
+            config.read(config_path)
+            
+            if 'window' in config:
+                x = int(config['window'].get('x', 100))
+                y = int(config['window'].get('y', 100))
+                width = int(config['window'].get('width', 400))
+                height = int(config['window'].get('height', 300))
+                return (x, y, width, height)
+    except (ValueError, KeyError, configparser.Error):
+        pass
+    
+    return None
+
+
 class OCRWorker(QObject):
-    """Worker class for performing OCR using Tesseract OCR."""
+    """Worker class for performing OCR using Windows OCR API (same as Win11 built-in)."""
     ocr_complete = pyqtSignal(str)
+    
+    # Mapping of config language codes to Windows OCR language tags
+    LANGUAGE_MAP = {
+        'chi_sim+eng': 'zh-Hans',      # Simplified Chinese
+        'chi_tra+eng': 'zh-Hant',      # Traditional Chinese
+        'chi_sim+chi_tra+eng': 'zh-Hans',  # Default to Simplified
+        'chi_sim+chi_tra+jpn+eng': 'zh-Hans',  # Default to Simplified
+        'jpn+eng': 'ja',               # Japanese
+        'eng': 'en',                   # English
+        'kor+eng': 'ko',               # Korean
+    }
     
     def __init__(self):
         super().__init__()
@@ -152,120 +200,53 @@ class OCRWorker(QObject):
         """Set the OCR language to use."""
         self.ocr_language = language
     
-    def preprocess_image(self, image):
-        """Preprocess image to improve OCR accuracy, especially for Japanese text."""
-        from PIL import Image, ImageEnhance, ImageFilter
-        import numpy as np
-        
-        # Convert to grayscale if not already
-        if image.mode != 'L':
-            image = image.convert('L')
-        
-        # Enhance contrast more aggressively for small punctuation marks
-        enhancer = ImageEnhance.Contrast(image)
-        image = enhancer.enhance(2.5)  # Increased for better punctuation clarity
-        
-        # Increase brightness to help with light punctuation
-        enhancer = ImageEnhance.Brightness(image)
-        image = enhancer.enhance(1.3)
-        
-        # Apply multiple sharpening passes for crisp punctuation
-        image = image.filter(ImageFilter.SHARPEN)
-        image = image.filter(ImageFilter.SHARPEN)
-        image = image.filter(ImageFilter.EDGE_ENHANCE)
-        
-        # Apply adaptive threshold for better punctuation detection
-        # Using lower threshold to catch smaller marks like ・
-        img_array = np.array(image)
-        
-        # Use median-based threshold
-        median_val = np.median(img_array)
-        threshold = int(median_val * 0.8)  # 80% of median for better punctuation
-        
-        image = image.point(lambda x: 255 if x > threshold else 0)
-        
-        return image
-    
-    def _get_symbol_correction_map(self):
-        """Get mapping of commonly misrecognized symbols."""
-        return {
-            # Japanese middle dot variations
-            '・': ['・', '·', '丶', '･', '。', '|', 'I', 'l', '1', '·', '▪', '■'],
-            
-            # Japanese punctuation
-            '。': ['。', '0', 'o', '●', '●', '0', '.', '。'],
-            '、': ['、', ',', ',,', ',', '，', '、'],
-            '！': ['！', '!', 'Ⅰ', 'I', '!'],
-            '？': ['？', '?', '？'],
-            
-            # Brackets and parentheses
-            '（': ['（', '(', '(', '(', '[', '【'],
-            '）': ['）', ')', ')', ')', ']', '】'],
-            '【': ['【', '[', '【', '『'],
-            '】': ['】', ']', '】', '』'],
-            
-            # Dashes and hyphens
-            '・': ['・', '-', '−', '─', '–', '—', '―'],
-            
-            # Stars and special chars
-            '☆': ['☆', '*', '★', '✩', '✪', '✨'],
-            '❤': ['❤', 'O', '0', 'Q', '@'],
-        }
+    def _get_windows_language(self):
+        """Convert config language to Windows OCR language tag."""
+        return self.LANGUAGE_MAP.get(self.ocr_language, 'zh-Hans')
     
     def clean_ocr_text(self, text):
-        """Clean OCR result to remove obvious recognition errors and fix symbol misrecognition."""
+        """Clean OCR result - remove unwanted spaces between CJK characters and fix common OCR errors."""
         import re
         
-        # Japanese punctuation and symbol error corrections
-        # These are learned from common OCR misrecognitions
+        # Only remove truly problematic invisible/control characters
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
         
-        # Most aggressive: replace obviously wrong sequences
-        # ・ (middle dot) is often misrecognized as: |, I, l, 1, ·, etc.
-        # Fix patterns where these clearly should be middle dots
-        text = re.sub(r'(?<=[ぁ-ん])[\|I1l`′](?=[ぁ-ん])', '・', text)  # Between hiragana
-        text = re.sub(r'(?<=[ァ-ヴ])[|I1l`′](?=[ァ-ヴ])', '・', text)   # Between katakana
-        text = re.sub(r'(?<=[ァ-ヴ])[\|I1l`′](?=・)', '・', text)        # Before existing middle dot
+        # Fix I/l confusion: uppercase I between lowercase letters should be lowercase l
+        # e.g., "fIle" -> "file", "heIlo" -> "hello"
+        text = re.sub(r'(?<=[a-z])I(?=[a-z])', 'l', text)
         
-        # Period/Full stop errors: 。often becomes o, 0, O, ●
-        text = re.sub(r'(?<=[ぁ-ん])[o0O●]+(?=[\s\n]|$)', '。', text)    # After hiragana, end of line
-        text = re.sub(r'(?<=[ァ-ヴ])[o0O●]+(?=[\s\n]|$)', '。', text)    # After katakana, end of line
-        text = re.sub(r'(?<=[々〆〇〉》」』【・])[o0O●]+(?=[\s\n]|$)', '。', text)  # After various marks
+        # Fix I at the end of lowercase words (e.g., "finaI" -> "final")
+        text = re.sub(r'(?<=[a-z])I(?=\s|$|[.,!?;:\)])', 'l', text)
         
-        # Comma errors: 、often becomes comma or other marks
-        text = re.sub(r'(?<=[ぁ-ん])[,､,，]+(?=[ぁ-ん])', '、', text)    # Between hiragana
-        text = re.sub(r'(?<=[ァ-ヴ])[,､,，]+(?=[ァ-ヴ])', '、', text)    # Between katakana
+        # Fix I after lowercase at start of word continuation (e.g., "alI" -> "all")
+        text = re.sub(r'(?<=[a-z])I(?=[a-z])', 'l', text)
         
-        # Exclamation mark: ！often becomes I or !
-        text = re.sub(r'(?<=[ぁ-ん])[!Ⅰ|]+(?=[\s\n]|[ぁ-ん])', '!', text)  # After hiragana
-        text = re.sub(r'(?<=[ァ-ヴ])[!Ⅰ|]+(?=[\s\n]|[ァ-ヴ])', '!', text)  # After katakana
+        # Remove spaces between Japanese hiragana characters
+        text = re.sub(r'([\u3040-\u309f])\s+([\u3040-\u309f])', r'\1\2', text)
         
-        # Question mark: ？often becomes ?
-        text = re.sub(r'[？?]+', '?', text)
+        # Remove spaces between Japanese katakana characters
+        text = re.sub(r'([\u30a0-\u30ff])\s+([\u30a0-\u30ff])', r'\1\2', text)
         
-        # Brackets: normalize variations
-        text = re.sub(r'[\(（【『]', '【', text)  # Open brackets to Japanese 【
-        text = re.sub(r'[\)）】』]', '】', text)  # Close brackets to Japanese 】
+        # Remove spaces between CJK characters (Chinese/Japanese kanji)
+        text = re.sub(r'([\u4e00-\u9fff])\s+([\u4e00-\u9fff])', r'\1\2', text)
         
-        # Fix square bracket confusions
-        text = re.sub(r'\[', '【', text)
-        text = re.sub(r'\]', '】', text)
+        # Remove spaces between hiragana and katakana
+        text = re.sub(r'([\u3040-\u309f])\s+([\u30a0-\u30ff])', r'\1\2', text)
+        text = re.sub(r'([\u30a0-\u30ff])\s+([\u3040-\u309f])', r'\1\2', text)
         
-        # Dash/hyphen: normalize
-        text = re.sub(r'[─〜～ー―\-−–—]', '・', text)  # To middle dot in context
+        # Remove spaces between hiragana/katakana and kanji
+        text = re.sub(r'([\u3040-\u30ff])\s+([\u4e00-\u9fff])', r'\1\2', text)
+        text = re.sub(r'([\u4e00-\u9fff])\s+([\u3040-\u30ff])', r'\1\2', text)
         
-        # Remove repeated special characters (likely OCR errors)
-        # But be careful with repeated Japanese punctuation which might be intentional
-        text = re.sub(r'([^\u3040-\u309f\u30a0-\u30ff])\1{3,}', r'\1\1', text)  # Keep only 2
+        # Remove spaces between CJK and Japanese punctuation
+        text = re.sub(r'([\u3040-\u30ff\u4e00-\u9fff])\s+([。、！？「」『』（）・：；])', r'\1\2', text)
+        text = re.sub(r'([。、！？「」『』（）・：；])\s+([\u3040-\u30ff\u4e00-\u9fff])', r'\1\2', text)
         
-        # Remove extreme repetitions of symbols that are clearly errors
-        text = re.sub(r'\|{2,}', '|', text)  # Multiple pipes to single
-        text = re.sub(r'[I1l]{3,}', 'I', text)  # Multiple I/1/l to single I
+        # Apply the patterns multiple times to catch all cases
+        for _ in range(3):
+            text = re.sub(r'([\u3040-\u30ff\u4e00-\u9fff])\s+([\u3040-\u30ff\u4e00-\u9fff])', r'\1\2', text)
         
-        # Clean up obvious OCR garbage
-        # Remove sequences of unrelated symbols
-        text = re.sub(r'[^a-zA-Z0-9\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff・。、！？；：""''（）【】， \t\n]', '', text)
-        
-        # Convert multiple spaces to single space
+        # Convert multiple spaces to single space (for remaining text)
         text = re.sub(r'[ \t]+', ' ', text)
         
         # Remove extra newlines but keep intentional ones
@@ -273,143 +254,84 @@ class OCRWorker(QObject):
         
         return text.strip()
     
-    def correct_symbol_errors(self, text):
-        """Attempt to correct symbol recognition errors using pattern matching."""
-        import re
-        
-        # For Japanese middle dot which is frequently misrecognized
-        # Pattern: anything that looks like it should be a middle dot
-        # Context: usually between words or at specific positions
-        
-        # Common misrecognitions of ・
-        misrecognized_patterns = {
-            # Looking for isolated characters or repeated simple marks that should be ・
-            r'[|Ⅰ`′](?=[\u3040-\u309f\u30a0-\u30ff]|\s|・)': '・',  # Before Japanese chars
-            r'(?<=[\u3040-\u309f\u30a0-\u30ff])[|Ⅰ`′](?=[\u3040-\u309f\u30a0-\u30ff])': '・',  # Between Japanese
-            
-            # Period-like errors
-            r'([oO0]+)(?=[\u3040-\u309f\u30a0-\u30ff]|$)': '。',  # End of line or before Japanese
-        }
-        
-        for pattern, replacement in misrecognized_patterns.items():
-            try:
-                text = re.sub(pattern, replacement, text)
-            except:
-                pass
-        
-        return text
-    
     def perform_ocr(self, image):
-        """Perform OCR on the given PIL image using Tesseract."""
+        """Perform OCR on the given PIL image using Windows OCR API."""
         try:
-            import os
-            import sys
-            
-            # Ensure environment and paths are set (do this every time)
-            os.environ['TESSDATA_PREFIX'] = r'C:\Program Files\Tesseract-OCR\tessdata'
-            os.environ['PATH'] = r'C:\Program Files\Tesseract-OCR\;' + os.environ.get('PATH', '')
-            
-            # Import pytesseract fresh
-            import pytesseract
-            
-            # Set the command path explicitly
-            tesseract_exe = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-            pytesseract.pytesseract.pytesseract_cmd = tesseract_exe
-            
-            # Verify file exists
-            if not os.path.exists(tesseract_exe):
-                self.ocr_complete.emit(
-                    f"Error: Tesseract executable not found at:\n{tesseract_exe}"
-                )
-                return
-            
             from PIL import Image
+            import winocr
+            from winrt.windows.media.ocr import OcrEngine
+            from winrt.windows.globalization import Language
             
             # Ensure image is PIL Image format
             if not isinstance(image, Image.Image):
                 self.ocr_complete.emit("Error: Invalid image format")
                 return
             
-            # Convert to RGB if necessary for preprocessing
+            # Convert to RGB if necessary
             if image.mode != 'RGB':
-                temp_image = image.convert('RGB')
+                image = image.convert('RGB')
+            
+            # Get Windows language code
+            win_lang = self._get_windows_language()
+            
+            # Check if the language is supported, try fallbacks
+            languages_to_try = [win_lang]
+            
+            # Add fallback languages based on primary language
+            if win_lang == 'zh-Hans':
+                languages_to_try.extend(['zh-Hant', 'zh-CN', 'zh-TW', 'ja', 'en'])
+            elif win_lang == 'zh-Hant':
+                languages_to_try.extend(['zh-Hans', 'zh-TW', 'zh-CN', 'ja', 'en'])
+            elif win_lang == 'ja':
+                languages_to_try.extend(['zh-Hans', 'zh-Hant', 'en'])
             else:
-                temp_image = image.copy()
+                languages_to_try.extend(['en', 'zh-Hans', 'zh-Hant'])
             
-            # Preprocess image for better OCR accuracy
-            processed_image = self.preprocess_image(temp_image)
+            # Find first available language
+            available_lang = None
+            for lang in languages_to_try:
+                try:
+                    if OcrEngine.is_language_supported(Language(lang)):
+                        available_lang = lang
+                        break
+                except:
+                    continue
             
-            # Perform OCR with selected language
-            text = None
+            if not available_lang:
+                self.ocr_complete.emit(
+                    "Error: No OCR language pack installed.\n\n"
+                    "Please install a language pack by running PowerShell as Administrator:\n"
+                    "Add-WindowsCapability -Online -Name \"Language.OCR~~~zh-TW~0.0.1.0\"\n"
+                    "or\n"
+                    "Add-WindowsCapability -Online -Name \"Language.OCR~~~zh-CN~0.0.1.0\""
+                )
+                return
+            
+            # Run Windows OCR asynchronously
+            async def run_ocr():
+                result = await winocr.recognize_pil(image, lang=available_lang)
+                return result
+            
+            # Execute the async OCR
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             try:
-                # Enhanced Tesseract configuration for better accuracy
-                # Especially optimized for Japanese punctuation and special characters
-                
-                # Determine optimal PSM based on language
-                # PSM 6 = Treat image as single uniform block of text
-                # PSM 3 = Fully automatic page segmentation
-                psm = '6' if 'jpn' in self.ocr_language else '3'
-                
-                # Build config with character preservation for punctuation
-                config = f'--psm {psm} --oem 3'
-                
-                # Add Tesseract options for better punctuation recognition
-                config += ' -c tesseract_create_pdf=0'
-                config += ' -c preserve_interword_spaces=0'
-                
-                # For Japanese specifically, use stricter settings
-                if 'jpn' in self.ocr_language:
-                    config += ' -c min_characters_to_try=1'
-                
-                text = pytesseract.image_to_string(processed_image, lang=self.ocr_language, config=config)
-                
-                # For mixed text (Chinese + Japanese), try additional language combination if result is poor
-                if self.ocr_language not in ['chi_sim+chi_tra+jpn+eng', 'chi_sim+chi_tra', 'jpn+eng']:
-                    if text and len(text.strip()) > 0:
-                        # Count detected characters
-                        import re
-                        cjk_chars = len(re.findall(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]', text))
-                        if cjk_chars > 0:
-                            # If we detected CJK characters but user selected specific language, it's good
-                            pass
-                
-            except Exception as e:
-                # Check if it's a language pack issue
-                error_str = str(e).lower()
-                if any(x in error_str for x in ['chi_sim', 'chi_tra', 'jpn', 'language', 'osd']):
-                    # Try fallback to mixed language for better mixed-text handling
-                    try:
-                        text = pytesseract.image_to_string(processed_image, lang='chi_sim+chi_tra+jpn+eng')
-                        if text:
-                            text = f"[Using mixed language recognition]\n{text}"
-                    except Exception as e2:
-                        # Final fallback to English only
-                        try:
-                            text = pytesseract.image_to_string(processed_image, lang='eng')
-                            if text:
-                                text = f"[Fallback to English]\n{text}"
-                        except Exception as e3:
-                            raise Exception(f"OCR failed: {str(e)}")
-                else:
-                    raise e
+                result = loop.run_until_complete(run_ocr())
+            finally:
+                loop.close()
             
-            if not text or not text.strip():
-                text = "No text detected"
-            else:
-                # Clean the OCR result
+            # Extract text from result
+            if result and result.text:
+                text = result.text
                 text = self.clean_ocr_text(text)
-                # Further correct symbol-specific errors
-                text = self.correct_symbol_errors(text)
+            else:
+                text = "No text detected"
             
             self.ocr_complete.emit(text)
             
         except Exception as e:
             import traceback
-            self.ocr_complete.emit(f"OCR Error: {str(e)}")
-            
-        except Exception as e:
-            import traceback
-            self.ocr_complete.emit(f"OCR Error: {str(e)}")
+            self.ocr_complete.emit(f"OCR Error: {str(e)}\n{traceback.format_exc()}")
 
 
 class SelectionWindow(QWidget):
@@ -750,7 +672,15 @@ class OCRWindow(QMainWindow):
     def init_ui(self):
         """Initialize the user interface."""
         self.setWindowTitle('One Sentence OCR')
-        self.setGeometry(100, 100, 400, 300)
+        
+        # Load saved window geometry or use default
+        saved_geometry = load_window_geometry_from_config()
+        if saved_geometry:
+            x, y, width, height = saved_geometry
+            self.setGeometry(x, y, width, height)
+        else:
+            self.setGeometry(100, 100, 400, 300)
+        
         self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
         
         # Create File menu with actions
@@ -776,31 +706,6 @@ class OCRWindow(QMainWindow):
         self.remove_newlines_action.setChecked(self.remove_newlines)
         self.remove_newlines_action.triggered.connect(self.toggle_remove_newlines)
         
-        option_menu.addSeparator()
-        
-        # Add language submenu
-        language_menu = option_menu.addMenu('Language')
-        
-        # Language options
-        self.language_actions = {}
-        languages = {
-            'Simplified Chinese': 'chi_sim',
-            'Simplified Chinese + English': 'chi_sim+eng',
-            'Traditional Chinese': 'chi_tra',
-            'Traditional Chinese + English': 'chi_tra+eng',
-            'Japanese': 'jpn',
-            'Japanese + English': 'jpn+eng',
-            'English': 'eng',
-            'Multi-language (Sim + Tra + Jpn + Eng)': 'chi_sim+chi_tra+jpn+eng'
-        }
-        
-        for label, lang_code in languages.items():
-            action = language_menu.addAction(label)
-            action.setCheckable(True)
-            action.setChecked(self.ocr_language == lang_code)
-            action.triggered.connect(lambda checked, lang=lang_code, lbl=label: self.set_ocr_language(lang, lbl))
-            self.language_actions[lang_code] = action
-        
         # Main layout
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -815,7 +720,44 @@ class OCRWindow(QMainWindow):
         self.text_display = QTextEdit()
         self.text_display.setReadOnly(True)
         self.text_display.setPlaceholderText('OCR results will appear here...')
+        self.text_display.setStyleSheet('QTextEdit { font-weight: bold; font-size: 14pt; }')
         layout.addWidget(self.text_display)
+        
+        # Language buttons at the bottom
+        button_layout = QHBoxLayout()
+        
+        self.chinese_btn = QPushButton('中文')
+        self.chinese_btn.setCheckable(True)
+        self.chinese_btn.setChecked(self.ocr_language in ['chi_sim+eng', 'chi_sim', 'chi_tra+eng', 'chi_tra'])
+        self.chinese_btn.clicked.connect(lambda: self.set_ocr_language('chi_sim+eng', '中文'))
+        self.chinese_btn.setStyleSheet(self._get_button_style(self.chinese_btn.isChecked()))
+        button_layout.addWidget(self.chinese_btn)
+        
+        self.japanese_btn = QPushButton('日文')
+        self.japanese_btn.setCheckable(True)
+        self.japanese_btn.setChecked(self.ocr_language in ['jpn+eng', 'jpn'])
+        self.japanese_btn.clicked.connect(lambda: self.set_ocr_language('jpn+eng', '日文'))
+        self.japanese_btn.setStyleSheet(self._get_button_style(self.japanese_btn.isChecked()))
+        button_layout.addWidget(self.japanese_btn)
+        
+        layout.addLayout(button_layout)
+    
+    def _get_button_style(self, is_selected):
+        """Get button style based on selection state."""
+        if is_selected:
+            return 'QPushButton { background-color: #FFD700; color: black; font-weight: bold; font-size: 14pt; padding: 8px; }'
+        else:
+            return 'QPushButton { background-color: #f0f0f0; color: black; font-weight: bold; font-size: 14pt; padding: 8px; }'
+    
+    def _update_language_buttons(self):
+        """Update language button styles based on current selection."""
+        is_chinese = self.ocr_language in ['chi_sim+eng', 'chi_sim', 'chi_tra+eng', 'chi_tra']
+        is_japanese = self.ocr_language in ['jpn+eng', 'jpn']
+        
+        self.chinese_btn.setChecked(is_chinese)
+        self.japanese_btn.setChecked(is_japanese)
+        self.chinese_btn.setStyleSheet(self._get_button_style(is_chinese))
+        self.japanese_btn.setStyleSheet(self._get_button_style(is_japanese))
         
     def display_result(self, text):
         """Display OCR result in the text area."""
@@ -844,11 +786,8 @@ class OCRWindow(QMainWindow):
         self.ocr_language = language
         self.ocr_worker.set_language(language)
         
-        # Uncheck all language actions and check the selected one
-        for action in self.language_actions.values():
-            action.setChecked(False)
-        if language in self.language_actions:
-            self.language_actions[language].setChecked(True)
+        # Update button styles
+        self._update_language_buttons()
         
         # Save the language to config.ini immediately
         save_options_to_config(self.remove_newlines, language)
@@ -864,6 +803,7 @@ class OCRWindow(QMainWindow):
         self.remove_newlines, self.ocr_language = load_options_from_config()
         self.ocr_worker.set_language(self.ocr_language)
         self.remove_newlines_action.setChecked(self.remove_newlines)
+        self._update_language_buttons()
         
         self.hide()
         self.selection_window = SelectionWindow(self)
@@ -871,11 +811,17 @@ class OCRWindow(QMainWindow):
     
     def close_application(self):
         """Close the application."""
+        # Save window geometry before closing
+        geometry = self.geometry()
+        save_window_geometry_to_config(geometry.x(), geometry.y(), geometry.width(), geometry.height())
         import sys
         sys.exit(0)
     
     def closeEvent(self, event):
         """Handle window close event - close the application."""
+        # Save window geometry before closing
+        geometry = self.geometry()
+        save_window_geometry_to_config(geometry.x(), geometry.y(), geometry.width(), geometry.height())
         event.accept()
         import sys
         sys.exit(0)
@@ -947,7 +893,7 @@ class SystemTrayApp:
     def tray_icon_activated(self, reason):
         """Handle tray icon click."""
         if reason == QSystemTrayIcon.Trigger:
-            self.start_capture()
+            self.show_window()
     
     def minimize_to_tray(self):
         """Minimize the main window to tray."""

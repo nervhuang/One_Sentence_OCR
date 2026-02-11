@@ -1,4 +1,5 @@
 PyQt5>=5.15.0
-pytesseract>=0.3.10
+winocr>=0.0.15
 Pillow>=9.0.0
-pyperclip>=1.8.2pynput>=1.7.6
+pyperclip>=1.8.2
+pynput>=1.7.6
