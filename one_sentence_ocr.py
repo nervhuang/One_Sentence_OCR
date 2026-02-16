@@ -254,10 +254,10 @@ class OCRWorker(QObject):
         text = re.sub(r'([A-Za-z0-9]+)\s+([\u4e00-\u9fff\u3040-\u30ff])', r'\1\2', text)
         text = re.sub(r'([\u4e00-\u9fff\u3040-\u30ff])\s+([A-Za-z0-9]+)', r'\1\2', text)
 
-        # Replace roman-numeral-like connectors between tokens with '][' (e.g. '[DL版 Ⅱ 無修' -> '[DL版][無修')
-        # Match Unicode roman numerals (U+2160–U+2188) or ASCII roman numerals (I,V,X,L,C,D,M)
+        # Replace roman-numeral-like connectors between tokens with '][' (e.g. 'DL Ⅱ 無修' -> 'DL][無修')
+        # Only match roman numerals as whole words (avoid matching letters inside ASCII tokens like 'DL')
         text = re.sub(
-            r'(?<=[A-Za-z0-9\u4e00-\u9fff\u3040-\u30ff])\s*(?:[\u2160-\u2188]+|[IVXLCDMivxlcdm]+)\s*(?=[A-Za-z0-9\u4e00-\u9fff\u3040-\u30ff])',
+            r'(?<=[A-Za-z0-9\u4e00-\u9fff\u3040-\u30ff])\s*\b(?:[\u2160-\u2188]+|[IVXLCDMivxlcdm]+)\b\s*(?=[A-Za-z0-9\u4e00-\u9fff\u3040-\u30ff])',
             '][',
             text
         )
