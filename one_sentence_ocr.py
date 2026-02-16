@@ -86,11 +86,12 @@ def load_options_from_config():
             if 'options' in config:
                 remove_newlines = config['options'].get('remove_newlines', 'False')
                 ocr_language = config['options'].get('ocr_language', 'chi_sim+eng')
-                return remove_newlines.lower() == 'true', ocr_language
+                force_brackets = config['options'].get('force_brackets', 'False')
+                return remove_newlines.lower() == 'true', ocr_language, force_brackets.lower() == 'true'
     except (ValueError, KeyError, configparser.Error):
         pass
     
-    return False, 'chi_sim+eng'
+    return False, 'chi_sim+eng', False
 
 
 def load_ocr_language_from_config():
@@ -126,6 +127,9 @@ def save_options_to_config(remove_newlines, ocr_language='chi_sim+eng'):
     # Update options
     config['options']['remove_newlines'] = str(remove_newlines)
     config['options']['ocr_language'] = str(ocr_language)
+    # preserve existing force_brackets if present (caller should pass via keyword args elsewhere)
+    existing_force = config['options'].get('force_brackets', 'False')
+    config['options']['force_brackets'] = str(existing_force)
     
     # Write to file
     with open(config_path, 'w') as f:
@@ -660,7 +664,7 @@ class OCRWindow(QMainWindow):
         self.offset = QPoint()
         
         # Load options from config
-        self.remove_newlines, self.ocr_language = load_options_from_config()
+        self.remove_newlines, self.ocr_language, self.force_brackets = load_options_from_config()
         
         # Initialize OCR worker
         self.ocr_worker = OCRWorker()
@@ -740,6 +744,21 @@ class OCRWindow(QMainWindow):
         self.japanese_btn.setStyleSheet(self._get_button_style(self.japanese_btn.isChecked()))
         button_layout.addWidget(self.japanese_btn)
         
+        # Bracket force adjustment buttons (same row)
+        self.force_brackets_btn = QPushButton('強制括弧')
+        self.force_brackets_btn.setCheckable(True)
+        self.force_brackets_btn.setChecked(self.force_brackets)
+        self.force_brackets_btn.clicked.connect(lambda: self.set_force_brackets(True))
+        self.force_brackets_btn.setStyleSheet(self._get_button_style(self.force_brackets_btn.isChecked()))
+        button_layout.addWidget(self.force_brackets_btn)
+
+        self.no_force_brackets_btn = QPushButton('不強制括弧')
+        self.no_force_brackets_btn.setCheckable(True)
+        self.no_force_brackets_btn.setChecked(not self.force_brackets)
+        self.no_force_brackets_btn.clicked.connect(lambda: self.set_force_brackets(False))
+        self.no_force_brackets_btn.setStyleSheet(self._get_button_style(self.no_force_brackets_btn.isChecked()))
+        button_layout.addWidget(self.no_force_brackets_btn)
+
         layout.addLayout(button_layout)
     
     def _get_button_style(self, is_selected):
@@ -758,12 +777,21 @@ class OCRWindow(QMainWindow):
         self.japanese_btn.setChecked(is_japanese)
         self.chinese_btn.setStyleSheet(self._get_button_style(is_chinese))
         self.japanese_btn.setStyleSheet(self._get_button_style(is_japanese))
+        # Update bracket buttons style
+        self.force_brackets_btn.setChecked(self.force_brackets)
+        self.no_force_brackets_btn.setChecked(not self.force_brackets)
+        self.force_brackets_btn.setStyleSheet(self._get_button_style(self.force_brackets_btn.isChecked()))
+        self.no_force_brackets_btn.setStyleSheet(self._get_button_style(self.no_force_brackets_btn.isChecked()))
         
     def display_result(self, text):
         """Display OCR result in the text area."""
         # Process text if remove newlines option is enabled
         if self.remove_newlines:
             text = text.replace('\n', '')
+
+        # Apply bracket normalization if force option enabled
+        if getattr(self, 'force_brackets', False):
+            text = self._normalize_brackets(text)
         
         self.text_display.setPlainText(text)
         
@@ -780,6 +808,57 @@ class OCRWindow(QMainWindow):
         self.remove_newlines = self.remove_newlines_action.isChecked()
         # Save the option to config.ini immediately
         save_options_to_config(self.remove_newlines, self.ocr_language)
+
+    def set_force_brackets(self, force: bool):
+        """Enable or disable forced bracket normalization and persist setting."""
+        self.force_brackets = bool(force)
+        # Update UI
+        self._update_language_buttons()
+        # Save current options including force_brackets
+        config = configparser.ConfigParser()
+        config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+        if os.path.exists(config_path):
+            config.read(config_path)
+        if 'options' not in config:
+            config['options'] = {}
+        config['options']['remove_newlines'] = str(self.remove_newlines)
+        config['options']['ocr_language'] = str(self.ocr_language)
+        config['options']['force_brackets'] = str(self.force_brackets)
+        with open(config_path, 'w') as f:
+            config.write(f)
+
+    def _normalize_brackets(self, text: str) -> str:
+        """Replace various full-width/cjk brackets with half-width ASCII equivalents."""
+        if not text:
+            return text
+        mapping = {
+            # parentheses / brackets
+            '（': '(', '）': ')',
+            '﹙': '(', '﹚': ')',
+
+            '［': '[', '］': ']', '【': '[', '】': ']',
+            '｛': '{', '｝': '}',
+
+            # angle/angle corner brackets
+            '《': '<', '》': '>', '＜': '<', '＞': '>',
+
+            # corner quotes and Japanese quote marks -> use ASCII quotes
+            '「': '"', '」': '"', '『': '"', '』': '"',
+            '“': '"', '”': '"', '‘': "'", '’': "'",
+
+            # punctuation (fullwidth -> ASCII)
+            '，': ',', '：': ':', '；': ';', '。': '.', '、': ',',
+            '？': '?', '！': '!', '－': '-', '—': '-', '〜': '~', '～': '~',
+            '／': '/', '＼': '\\',
+
+            # other less common fullwidth symbols
+            '【': '[', '】': ']',
+            '《': '<', '》': '>',
+        }
+        # Replace all occurrences
+        for k, v in mapping.items():
+            text = text.replace(k, v)
+        return text
     
     def set_ocr_language(self, language, label):
         """Set the OCR language."""
@@ -800,7 +879,7 @@ class OCRWindow(QMainWindow):
     def start_capture(self):
         """Start the screen area selection process."""
         # Reload options from config before capturing
-        self.remove_newlines, self.ocr_language = load_options_from_config()
+        self.remove_newlines, self.ocr_language, self.force_brackets = load_options_from_config()
         self.ocr_worker.set_language(self.ocr_language)
         self.remove_newlines_action.setChecked(self.remove_newlines)
         self._update_language_buttons()
