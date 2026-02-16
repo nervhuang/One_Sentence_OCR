@@ -7,56 +7,57 @@ Uses Windows OCR API for accurate text recognition.
 import sys
 import os
 import threading
-import configparser
-import asyncio
-from datetime import datetime
+# Default symbol mapping used for normalization. Keys are original symbols; values are replacement.
+DEFAULT_SYMBOL_MAP = {
+    '（': '(', '）': ')', '﹙': '(', '﹚': ')', '︵': '(', '︶': ')',
+    '❨': '(', '❩': ')', '❪': '(', '❫': ')',
+    '［': '[', '］': ']', '【': '[', '】': ']', '〔': '[', '〕': ']',
+    '｛': '{', '｝': '}', '〖': '[', '〗': ']',
+    '《': '<', '》': '>', '〈': '<', '〉': '>', '⟨': '<', '⟩': '>', '＜': '<', '＞': '>',
+    '「': '"', '」': '"', '『': '"', '』': '"', '“': '"', '”': '"', '‘': "'", '’': "'",
+    '，': ',', '。': '.', '、': ',', '：': ':', '；': ';', '？': '?', '！': '!',
+    '－': '-', '—': '-', '‒': '-', '–': '-', '〜': '~', '～': '~',
+    '／': '/', '＼': '\\',
+    '﹝': '[', '﹞': ']', '﹛': '{', '﹜': '}',
+    '☆': '☆', '★': '★', '♪': '♪', '•': '•', '·': '·',
+}
 
-from PyQt5.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QWidget, 
-                             QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMessageBox, QTextEdit, QMenuBar, QMainWindow)
-from PyQt5.QtCore import Qt, QPoint, QRect, pyqtSignal, QObject, QEvent
-from PyQt5.QtGui import QIcon, QPixmap, QCursor, QPainter, QPen, QColor
-from PIL import Image
-import pyperclip
-import io
 
-
-def save_selection_to_config(x, y, width, height, remove_newlines=None):
-    """Save the selection box dimensions and options to config.ini"""
+def load_symbol_settings_from_config():
+    """Load per-symbol enabled/disabled settings from config.ini.
+    Returns a dict mapping original symbol -> bool (True=replace enabled).
+    If no settings exist, defaults to True for all symbols.
+    """
     config = configparser.ConfigParser()
     config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
-    
-    # Read existing config or create new one
+    settings = {}
+    try:
+        if os.path.exists(config_path):
+            config.read(config_path)
+            if 'symbol_map' in config:
+                for k, v in config['symbol_map'].items():
+                    settings[k] = v.lower() == 'true'
+    except Exception:
+        pass
+    # default True for symbols not present
+    for k in DEFAULT_SYMBOL_MAP.keys():
+        if k not in settings:
+            settings[k] = True
+    return settings
+
+
+def save_symbol_settings_to_config(settings: dict):
+    """Save per-symbol settings to config.ini under [symbol_map]."""
+    config = configparser.ConfigParser()
+    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
     if os.path.exists(config_path):
         config.read(config_path)
-    else:
-        config['selection'] = {}
-    
-    # Ensure sections exist
-    if 'selection' not in config:
-        config['selection'] = {}
-    if 'options' not in config:
-        config['options'] = {}
-    
-    # Update selection values
-    config['selection']['x'] = str(x)
-    config['selection']['y'] = str(y)
-    config['selection']['width'] = str(width)
-    config['selection']['height'] = str(height)
-    config['selection']['last_updated'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
-    # Update options if provided
-    if remove_newlines is not None:
-        config['options']['remove_newlines'] = str(remove_newlines)
-    
-    # Write to file
+    if 'symbol_map' not in config:
+        config['symbol_map'] = {}
+    for k, enabled in settings.items():
+        config['symbol_map'][k] = str(bool(enabled))
     with open(config_path, 'w') as f:
         config.write(f)
-
-
-def load_selection_from_config():
-    """Load the last selection box dimensions from config.ini"""
-    config = configparser.ConfigParser()
-    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
     
     try:
         if os.path.exists(config_path):
@@ -726,6 +727,10 @@ class OCRWindow(QMainWindow):
         self.remove_newlines_action.setChecked(self.remove_newlines)
         self.remove_newlines_action.triggered.connect(self.toggle_remove_newlines)
         
+        # Symbol map action
+        self.symbol_map_action = option_menu.addAction('Symbol Map...')
+        self.symbol_map_action.triggered.connect(self.open_symbol_map)
+        
         # Main layout
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -761,14 +766,14 @@ class OCRWindow(QMainWindow):
         button_layout.addWidget(self.japanese_btn)
         
         # Bracket force adjustment buttons (same row)
-        self.force_brackets_btn = QPushButton('強制括弧轉換')
+        self.force_brackets_btn = QPushButton('強制符號轉換')
         self.force_brackets_btn.setCheckable(True)
         self.force_brackets_btn.setChecked(self.force_brackets)
         self.force_brackets_btn.clicked.connect(lambda: self.set_force_brackets(True))
         self.force_brackets_btn.setStyleSheet(self._get_button_style(self.force_brackets_btn.isChecked()))
         button_layout.addWidget(self.force_brackets_btn)
 
-        self.no_force_brackets_btn = QPushButton('不強制括弧轉換')
+        self.no_force_brackets_btn = QPushButton('不強制符號轉換')
         self.no_force_brackets_btn.setCheckable(True)
         self.no_force_brackets_btn.setChecked(not self.force_brackets)
         self.no_force_brackets_btn.clicked.connect(lambda: self.set_force_brackets(False))
@@ -776,6 +781,79 @@ class OCRWindow(QMainWindow):
         button_layout.addWidget(self.no_force_brackets_btn)
 
         layout.addLayout(button_layout)
+
+        # --- Symbol Map Dialog class defined here to keep access to Qt context ---
+        
+    def open_symbol_map(self):
+        dialog = SymbolMapDialog(self)
+        if dialog.exec_():
+            settings = dialog.get_settings()
+            save_symbol_settings_to_config(settings)
+            # No immediate UI refresh needed; normalization will use updated settings
+
+
+class SymbolMapDialog(QDialog):
+    """Dialog that shows the symbol mapping and allows toggling replacements."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Symbol Map')
+        self.resize(520, 400)
+        layout = QVBoxLayout(self)
+
+        # Table: Replace (checkbox) | Original | Replacement
+        self.table = QTableWidget(self)
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(['Replace', 'Original', 'Replacement'])
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+
+        settings = load_symbol_settings_from_config()
+        keys = list(DEFAULT_SYMBOL_MAP.keys())
+        self.table.setRowCount(len(keys))
+        for i, k in enumerate(keys):
+            # checkbox
+            cb = QCheckBox()
+            cb.setChecked(settings.get(k, True))
+            self.table.setCellWidget(i, 0, cb)
+            # original symbol
+            item_orig = QTableWidgetItem(k)
+            item_orig.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            self.table.setItem(i, 1, item_orig)
+            # replacement
+            item_rep = QTableWidgetItem(DEFAULT_SYMBOL_MAP.get(k, ''))
+            item_rep.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            self.table.setItem(i, 2, item_rep)
+
+        layout.addWidget(self.table)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        save_btn = QPushButton('Save')
+        cancel_btn = QPushButton('Cancel')
+        reset_btn = QPushButton('Reset Defaults')
+        save_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        reset_btn.clicked.connect(self.reset_defaults)
+        btn_layout.addWidget(reset_btn)
+        btn_layout.addStretch(1)
+        btn_layout.addWidget(save_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+    def get_settings(self):
+        settings = {}
+        for i in range(self.table.rowCount()):
+            orig = self.table.item(i, 1).text()
+            cb = self.table.cellWidget(i, 0)
+            settings[orig] = bool(cb.isChecked())
+        return settings
+
+    def reset_defaults(self):
+        # set all to True
+        for i in range(self.table.rowCount()):
+            cb = self.table.cellWidget(i, 0)
+            cb.setChecked(True)
+
     
     def _get_button_style(self, is_selected):
         """Get button style based on selection state."""
@@ -798,6 +876,13 @@ class OCRWindow(QMainWindow):
         self.no_force_brackets_btn.setChecked(not self.force_brackets)
         self.force_brackets_btn.setStyleSheet(self._get_button_style(self.force_brackets_btn.isChecked()))
         self.no_force_brackets_btn.setStyleSheet(self._get_button_style(self.no_force_brackets_btn.isChecked()))
+
+    def open_symbol_map(self):
+        dialog = SymbolMapDialog(self)
+        if dialog.exec_():
+            # Save and apply updated settings
+            settings = dialog.get_settings()
+            save_symbol_settings_to_config(settings)
         
     def display_result(self, text):
         """Display OCR result in the text area."""
@@ -847,29 +932,9 @@ class OCRWindow(QMainWindow):
         """Replace various full-width/cjk brackets with half-width ASCII equivalents."""
         if not text:
             return text
-        mapping = {
-            # parentheses / brackets (many variants and presentation forms)
-            '（': '(', '）': ')', '﹙': '(', '﹚': ')', '︵': '(', '︶': ')',
-            '❨': '(', '❩': ')', '❪': '(', '❫': ')',
-
-            # square/angle/curly brackets
-            '［': '[', '］': ']', '【': '[', '】': ']', '〔': '[', '〕': ']',
-            '｛': '{', '｝': '}', '〖': '[', '〗': ']',
-
-            # angle/chevrons
-            '《': '<', '》': '>', '〈': '<', '〉': '>', '⟨': '<', '⟩': '>', '＜': '<', '＞': '>',
-
-            # corner quotes and Japanese quote marks -> use ASCII quotes
-            '「': '"', '」': '"', '『': '"', '』': '"', '“': '"', '”': '"', '‘': "'", '’': "'",
-
-            # punctuation (fullwidth -> ASCII)
-            '，': ',', '。': '.', '、': ',', '：': ':', '；': ';', '？': '?', '！': '!',
-            '－': '-', '—': '-', '‒': '-', '–': '-', '〜': '~', '～': '~',
-            '／': '/', '＼': '\\',
-
-            # miscellaneous presentation forms
-            '﹝': '[', '﹞': ']', '﹛': '{', '﹜': '}',
-        }
+        # Use DEFAULT_SYMBOL_MAP but respect per-symbol settings from config
+        symbol_settings = load_symbol_settings_from_config()
+        mapping = {k: v for k, v in DEFAULT_SYMBOL_MAP.items() if symbol_settings.get(k, True)}
         # Replace all occurrences
         for k, v in mapping.items():
             text = text.replace(k, v)
