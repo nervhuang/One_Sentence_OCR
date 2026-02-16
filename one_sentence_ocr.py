@@ -745,14 +745,14 @@ class OCRWindow(QMainWindow):
         button_layout.addWidget(self.japanese_btn)
         
         # Bracket force adjustment buttons (same row)
-        self.force_brackets_btn = QPushButton('強制括弧')
+        self.force_brackets_btn = QPushButton('強制括弧轉換')
         self.force_brackets_btn.setCheckable(True)
         self.force_brackets_btn.setChecked(self.force_brackets)
         self.force_brackets_btn.clicked.connect(lambda: self.set_force_brackets(True))
         self.force_brackets_btn.setStyleSheet(self._get_button_style(self.force_brackets_btn.isChecked()))
         button_layout.addWidget(self.force_brackets_btn)
 
-        self.no_force_brackets_btn = QPushButton('不強制括弧')
+        self.no_force_brackets_btn = QPushButton('不強制括弧轉換')
         self.no_force_brackets_btn.setCheckable(True)
         self.no_force_brackets_btn.setChecked(not self.force_brackets)
         self.no_force_brackets_btn.clicked.connect(lambda: self.set_force_brackets(False))
@@ -832,32 +832,47 @@ class OCRWindow(QMainWindow):
         if not text:
             return text
         mapping = {
-            # parentheses / brackets
-            '（': '(', '）': ')',
-            '﹙': '(', '﹚': ')',
+            # parentheses / brackets (many variants and presentation forms)
+            '（': '(', '）': ')', '﹙': '(', '﹚': ')', '︵': '(', '︶': ')',
+            '❨': '(', '❩': ')', '❪': '(', '❫': ')',
 
-            '［': '[', '］': ']', '【': '[', '】': ']',
-            '｛': '{', '｝': '}',
+            # square/angle/curly brackets
+            '［': '[', '］': ']', '【': '[', '】': ']', '〔': '[', '〕': ']',
+            '｛': '{', '｝': '}', '〖': '[', '〗': ']',
 
-            # angle/angle corner brackets
-            '《': '<', '》': '>', '＜': '<', '＞': '>',
+            # angle/chevrons
+            '《': '<', '》': '>', '〈': '<', '〉': '>', '⟨': '<', '⟩': '>', '＜': '<', '＞': '>',
 
             # corner quotes and Japanese quote marks -> use ASCII quotes
-            '「': '"', '」': '"', '『': '"', '』': '"',
-            '“': '"', '”': '"', '‘': "'", '’': "'",
+            '「': '"', '」': '"', '『': '"', '』': '"', '“': '"', '”': '"', '‘': "'", '’': "'",
 
             # punctuation (fullwidth -> ASCII)
-            '，': ',', '：': ':', '；': ';', '。': '.', '、': ',',
-            '？': '?', '！': '!', '－': '-', '—': '-', '〜': '~', '～': '~',
+            '，': ',', '。': '.', '、': ',', '：': ':', '；': ';', '？': '?', '！': '!',
+            '－': '-', '—': '-', '‒': '-', '–': '-', '〜': '~', '～': '~',
             '／': '/', '＼': '\\',
 
-            # other less common fullwidth symbols
-            '【': '[', '】': ']',
-            '《': '<', '》': '>',
+            # miscellaneous presentation forms
+            '﹝': '[', '﹞': ']', '﹛': '{', '﹜': '}',
         }
         # Replace all occurrences
         for k, v in mapping.items():
             text = text.replace(k, v)
+
+        # Remove spaces directly inside brackets (e.g. '( test )' -> '(test)')
+        import re
+        # After normalization we only expect ASCII brackets here
+        # Remove space(s) after opening brackets
+        text = re.sub(r"\(\s+", "(", text)
+        text = re.sub(r"\[\s+", "[", text)
+        text = re.sub(r"\{\s+", "{", text)
+        text = re.sub(r"<\s+", "<", text)
+
+        # Remove space(s) before closing brackets
+        text = re.sub(r"\s+\)", ")", text)
+        text = re.sub(r"\s+\]", "]", text)
+        text = re.sub(r"\s+\}", "}", text)
+        text = re.sub(r"\s+>", ">", text)
+
         return text
     
     def set_ocr_language(self, language, label):
