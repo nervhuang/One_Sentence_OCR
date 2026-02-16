@@ -246,6 +246,10 @@ class OCRWorker(QObject):
         text = re.sub(r'([\u3040-\u30ff\u4e00-\u9fff])\s+([。、！？「」『』（）・：；])', r'\1\2', text)
         text = re.sub(r'([。、！？「」『』（）・：；])\s+([\u3040-\u30ff\u4e00-\u9fff])', r'\1\2', text)
         
+        # Remove spaces between ASCII alphanumerics and CJK characters (e.g. 'DL 版' -> 'DL版')
+        text = re.sub(r'([A-Za-z0-9]+)\s+([\u4e00-\u9fff\u3040-\u30ff])', r'\1\2', text)
+        text = re.sub(r'([\u4e00-\u9fff\u3040-\u30ff])\s+([A-Za-z0-9]+)', r'\1\2', text)
+
         # Apply the patterns multiple times to catch all cases
         for _ in range(3):
             text = re.sub(r'([\u3040-\u30ff\u4e00-\u9fff])\s+([\u3040-\u30ff\u4e00-\u9fff])', r'\1\2', text)
