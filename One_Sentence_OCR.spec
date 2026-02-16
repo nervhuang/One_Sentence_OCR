@@ -1,64 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
-import os
-import sys
-from PyInstaller.utils.hooks import get_module_file_attribute, collect_submodules, collect_data_files
+from PyInstaller.utils.hooks import collect_all
 
-# Add current venv to path
-venv_lib = r'D:\PycharmProjects\One_Sentence_OCR\.venv\Lib\site-packages'
+datas = []
+binaries = []
+hiddenimports = ['winocr', 'winrt']
+tmp_ret = collect_all('PyQt5')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
 
 a = Analysis(
     ['one_sentence_ocr.py'],
-    pathex=[venv_lib],
-    binaries=[],
-    datas=[
-        ('.venv\\Lib\\site-packages\\PyQt5', 'PyQt5'),
-        ('.venv\\Lib\\site-packages\\PIL', 'PIL'),
-        ('.venv\\Lib\\site-packages\\pyperclip', 'pyperclip'),
-        ('.venv\\Lib\\site-packages\\pynput', 'pynput'),
-        ('.venv\\Lib\\site-packages\\winocr.py', '.'),
-    ],
-    hiddenimports=[
-        'PIL',
-        'PIL.Image',
-        'PIL.ImageDraw',
-        'PIL.ImageGrab',
-        'PIL.ImageEnhance',
-        'PIL.ImageFilter',
-        'PIL.PngImagePlugin',
-        'PIL.BmpImagePlugin',
-        'PIL.TiffImagePlugin',
-        'PIL.JpegImagePlugin',
-        'pyperclip',
-        'pyperclip.windows',
-        'pynput',
-        'pynput.keyboard',
-        'pynput.keyboard._win32',
-        'pynput.mouse',
-        'pynput.mouse._win32',
-        'winocr',
-        'winrt',
-        'winrt.windows',
-        'winrt.windows.media',
-        'winrt.windows.media.ocr',
-        'winrt.windows.graphics',
-        'winrt.windows.graphics.imaging',
-        'winrt.windows.globalization',
-        'winrt.windows.foundation',
-        'winrt.windows.storage',
-        'winrt.windows.storage.streams',
-        'asyncio',
-        'pkgutil',
-        'distutils',
-        'PyQt5',
-        'PyQt5.QtCore',
-        'PyQt5.QtGui',
-        'PyQt5.QtWidgets',
-        'PyQt5.sip',
-        'io',
-        'threading',
-        'configparser',
-        'datetime',
-    ],
+    pathex=[],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -71,26 +26,20 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
-    name='One_Sentence_OCR',
+    name='one_sentence_ocr',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-)
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='One_Sentence_OCR',
 )
