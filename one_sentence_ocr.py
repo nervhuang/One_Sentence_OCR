@@ -23,10 +23,22 @@ import pyperclip
 import io
 
 
+def get_config_path():
+    """Get the correct config.ini path for both script and exe execution."""
+    if getattr(sys, 'frozen', False):
+        # Running as PyInstaller exe
+        config_dir = os.path.dirname(sys.executable)
+    else:
+        # Running as Python script
+        config_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    return os.path.join(config_dir, 'config.ini')
+
+
 def save_selection_to_config(x, y, width, height, remove_newlines=None):
     """Save the selection box dimensions and options to config.ini"""
     config = configparser.ConfigParser()
-    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    config_path = get_config_path()
     
     # Read existing config or create new one
     if os.path.exists(config_path):
@@ -59,7 +71,7 @@ def save_selection_to_config(x, y, width, height, remove_newlines=None):
 def load_selection_from_config():
     """Load the last selection box dimensions from config.ini"""
     config = configparser.ConfigParser()
-    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    config_path = get_config_path()
     
     try:
         if os.path.exists(config_path):
@@ -80,7 +92,7 @@ def load_selection_from_config():
 def load_options_from_config():
     """Load options from config.ini"""
     config = configparser.ConfigParser()
-    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    config_path = get_config_path()
     
     try:
         if os.path.exists(config_path):
@@ -100,7 +112,7 @@ def load_options_from_config():
 def load_hotkey_from_config():
     """Load hotkey setting from config.ini"""
     config = configparser.ConfigParser()
-    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    config_path = get_config_path()
     
     try:
         if os.path.exists(config_path):
@@ -121,7 +133,7 @@ def load_hotkey_from_config():
 def save_hotkey_to_config(key, ctrl=True, alt=False, shift=False):
     """Save hotkey setting to config.ini"""
     config = configparser.ConfigParser()
-    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    config_path = get_config_path()
     
     # Read existing config
     if os.path.exists(config_path):
@@ -145,7 +157,7 @@ def save_hotkey_to_config(key, ctrl=True, alt=False, shift=False):
 def load_ocr_language_from_config():
     """Load OCR language setting from config.ini"""
     config = configparser.ConfigParser()
-    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    config_path = get_config_path()
     
     try:
         if os.path.exists(config_path):
@@ -162,7 +174,7 @@ def load_ocr_language_from_config():
 def save_options_to_config(remove_newlines, ocr_language='chi_sim+eng', force_brackets=None):
     """Save options to config.ini"""
     config = configparser.ConfigParser()
-    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    config_path = get_config_path()
     
     # Read existing config
     if os.path.exists(config_path):
@@ -190,7 +202,7 @@ def save_options_to_config(remove_newlines, ocr_language='chi_sim+eng', force_br
 def save_window_geometry_to_config(x, y, width, height):
     """Save window position and size to config.ini"""
     config = configparser.ConfigParser()
-    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    config_path = get_config_path()
     
     # Read existing config
     if os.path.exists(config_path):
@@ -214,7 +226,7 @@ def save_window_geometry_to_config(x, y, width, height):
 def load_window_geometry_from_config():
     """Load window position and size from config.ini"""
     config = configparser.ConfigParser()
-    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    config_path = get_config_path()
     
     try:
         if os.path.exists(config_path):
