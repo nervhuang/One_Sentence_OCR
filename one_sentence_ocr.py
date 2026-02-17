@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# type: ignore
 """
 One Sentence OCR - A screenshot tool with system tray support.
 Captures selected screen area and copies to clipboard.
@@ -6,14 +7,16 @@ Uses Windows OCR API for accurate text recognition.
 """
 import sys
 import os
+import re
 import threading
 import configparser
 import asyncio
+import traceback
 from datetime import datetime
 
 from PyQt5.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QWidget, 
                              QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMessageBox, QTextEdit, QMenuBar, QMainWindow)
-from PyQt5.QtCore import Qt, QPoint, QRect, pyqtSignal, QObject, QEvent
+from PyQt5.QtCore import Qt, QPoint, QRect, pyqtSignal, QObject
 from PyQt5.QtGui import QIcon, QPixmap, QCursor, QPainter, QPen, QColor
 from PIL import Image
 import pyperclip
@@ -94,6 +97,51 @@ def load_options_from_config():
     return False, 'chi_sim+eng', False
 
 
+def load_hotkey_from_config():
+    """Load hotkey setting from config.ini"""
+    config = configparser.ConfigParser()
+    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    
+    try:
+        if os.path.exists(config_path):
+            config.read(config_path)
+            
+            if 'hotkey' in config:
+                hotkey_key = config['hotkey'].get('key', 'f12')
+                hotkey_ctrl = config['hotkey'].get('ctrl', 'True').lower() == 'true'
+                hotkey_alt = config['hotkey'].get('alt', 'False').lower() == 'true'
+                hotkey_shift = config['hotkey'].get('shift', 'False').lower() == 'true'
+                return (hotkey_key, hotkey_ctrl, hotkey_alt, hotkey_shift)
+    except (ValueError, KeyError, configparser.Error):
+        pass
+    
+    return ('f12', True, False, False)
+
+
+def save_hotkey_to_config(key, ctrl=True, alt=False, shift=False):
+    """Save hotkey setting to config.ini"""
+    config = configparser.ConfigParser()
+    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    
+    # Read existing config
+    if os.path.exists(config_path):
+        config.read(config_path)
+    
+    # Ensure hotkey section exists
+    if 'hotkey' not in config:
+        config['hotkey'] = {}
+    
+    # Update hotkey settings
+    config['hotkey']['key'] = str(key).lower()
+    config['hotkey']['ctrl'] = str(ctrl)
+    config['hotkey']['alt'] = str(alt)
+    config['hotkey']['shift'] = str(shift)
+    
+    # Write to file
+    with open(config_path, 'w') as f:
+        config.write(f)
+
+
 def load_ocr_language_from_config():
     """Load OCR language setting from config.ini"""
     config = configparser.ConfigParser()
@@ -111,7 +159,7 @@ def load_ocr_language_from_config():
     return 'chi_sim+eng'
 
 
-def save_options_to_config(remove_newlines, ocr_language='chi_sim+eng'):
+def save_options_to_config(remove_newlines, ocr_language='chi_sim+eng', force_brackets=None):
     """Save options to config.ini"""
     config = configparser.ConfigParser()
     config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
@@ -127,9 +175,12 @@ def save_options_to_config(remove_newlines, ocr_language='chi_sim+eng'):
     # Update options
     config['options']['remove_newlines'] = str(remove_newlines)
     config['options']['ocr_language'] = str(ocr_language)
-    # preserve existing force_brackets if present (caller should pass via keyword args elsewhere)
-    existing_force = config['options'].get('force_brackets', 'False')
-    config['options']['force_brackets'] = str(existing_force)
+    
+    # Update force_brackets if provided, otherwise preserve existing
+    if force_brackets is not None:
+        config['options']['force_brackets'] = str(force_brackets)
+    elif 'force_brackets' not in config['options']:
+        config['options']['force_brackets'] = 'False'
     
     # Write to file
     with open(config_path, 'w') as f:
@@ -210,8 +261,6 @@ class OCRWorker(QObject):
     
     def clean_ocr_text(self, text):
         """Clean OCR result - remove unwanted spaces between CJK characters and fix common OCR errors."""
-        import re
-        
         # Only remove truly problematic invisible/control characters
         text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
         
@@ -350,7 +399,6 @@ class OCRWorker(QObject):
             self.ocr_complete.emit(text)
             
         except Exception as e:
-            import traceback
             self.ocr_complete.emit(f"OCR Error: {str(e)}\n{traceback.format_exc()}")
 
 
@@ -823,7 +871,7 @@ class OCRWindow(QMainWindow):
         """Toggle the remove newlines option."""
         self.remove_newlines = self.remove_newlines_action.isChecked()
         # Save the option to config.ini immediately
-        save_options_to_config(self.remove_newlines, self.ocr_language)
+        save_options_to_config(self.remove_newlines, self.ocr_language, self.force_brackets)
 
     def set_force_brackets(self, force: bool):
         """Enable or disable forced bracket normalization and persist setting."""
@@ -831,17 +879,7 @@ class OCRWindow(QMainWindow):
         # Update UI
         self._update_language_buttons()
         # Save current options including force_brackets
-        config = configparser.ConfigParser()
-        config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
-        if os.path.exists(config_path):
-            config.read(config_path)
-        if 'options' not in config:
-            config['options'] = {}
-        config['options']['remove_newlines'] = str(self.remove_newlines)
-        config['options']['ocr_language'] = str(self.ocr_language)
-        config['options']['force_brackets'] = str(self.force_brackets)
-        with open(config_path, 'w') as f:
-            config.write(f)
+        save_options_to_config(self.remove_newlines, self.ocr_language, self.force_brackets)
 
     def _normalize_brackets(self, text: str) -> str:
         """Replace various full-width/cjk brackets with half-width ASCII equivalents."""
@@ -875,7 +913,6 @@ class OCRWindow(QMainWindow):
             text = text.replace(k, v)
 
         # Remove spaces directly inside brackets (e.g. '( test )' -> '(test)')
-        import re
         # After normalization we only expect ASCII brackets here
         # Remove space(s) after opening brackets
         text = re.sub(r"\(\s+", "(", text)
@@ -900,7 +937,7 @@ class OCRWindow(QMainWindow):
         self._update_language_buttons()
         
         # Save the language to config.ini immediately
-        save_options_to_config(self.remove_newlines, language)
+        save_options_to_config(self.remove_newlines, language, self.force_brackets)
         
         # Show confirmation
         self.text_display.setPlainText(f"Language changed to: {label}")
@@ -924,7 +961,6 @@ class OCRWindow(QMainWindow):
         # Save window geometry before closing
         geometry = self.geometry()
         save_window_geometry_to_config(geometry.x(), geometry.y(), geometry.width(), geometry.height())
-        import sys
         sys.exit(0)
     
     def closeEvent(self, event):
@@ -933,7 +969,6 @@ class OCRWindow(QMainWindow):
         geometry = self.geometry()
         save_window_geometry_to_config(geometry.x(), geometry.y(), geometry.width(), geometry.height())
         event.accept()
-        import sys
         sys.exit(0)
 
 
@@ -1026,28 +1061,58 @@ class SystemTrayApp:
         self.window.start_capture()
     
     def setup_global_hotkey(self):
-        """Setup Ctrl+F12 hotkey in a background thread."""
+        """Setup global hotkey from config in a background thread."""
         from pynput.keyboard import Key, Listener
         
+        # Load hotkey settings from config
+        hotkey_key, hotkey_ctrl, hotkey_alt, hotkey_shift = load_hotkey_from_config()
+        self.hotkey_config = (hotkey_key, hotkey_ctrl, hotkey_alt, hotkey_shift)
+        
+        # Map hotkey key string to pynput Key
+        key_mapping = {
+            'f12': Key.f12, 'f11': Key.f11, 'f10': Key.f10,
+            'esc': Key.esc, 'tab': Key.tab, 'enter': Key.enter,
+        }
+        
+        hotkey_pynput_key = key_mapping.get(hotkey_key.lower(), Key.f12)
+        
         ctrl_pressed = False
+        alt_pressed = False
+        shift_pressed = False
         
         def on_press(key):
-            nonlocal ctrl_pressed
+            nonlocal ctrl_pressed, alt_pressed, shift_pressed
             try:
                 if key == Key.ctrl_l or key == Key.ctrl_r:
                     ctrl_pressed = True
-                elif key == Key.f12:
-                    if ctrl_pressed:
+                elif key == Key.alt_l or key == Key.alt_r:
+                    alt_pressed = True
+                elif key == Key.shift_l or key == Key.shift_r:
+                    shift_pressed = True
+                elif key == hotkey_pynput_key:
+                    # Check if the required modifiers are pressed
+                    # Logic: only check that required modifiers are pressed,
+                    # ignore state of unrequired modifiers
+                    modifiers_match = (
+                        (not hotkey_ctrl or ctrl_pressed) and 
+                        (not hotkey_alt or alt_pressed) and 
+                        (not hotkey_shift or shift_pressed)
+                    )
+                    if modifiers_match:
                         # Emit signal to trigger capture in main thread
                         self.hotkey_signals.hotkey_pressed.emit()
             except AttributeError:
                 pass
         
         def on_release(key):
-            nonlocal ctrl_pressed
+            nonlocal ctrl_pressed, alt_pressed, shift_pressed
             try:
                 if key == Key.ctrl_l or key == Key.ctrl_r:
                     ctrl_pressed = False
+                elif key == Key.alt_l or key == Key.alt_r:
+                    alt_pressed = False
+                elif key == Key.shift_l or key == Key.shift_r:
+                    shift_pressed = False
             except AttributeError:
                 pass
         

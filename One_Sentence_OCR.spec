@@ -1,12 +1,27 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = []
-binaries = []
-hiddenimports = ['winocr', 'winrt']
-tmp_ret = collect_all('PyQt5')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-
+# Collect PyQt5 data and binaries
+pyqt_data = collect_all('PyQt5')
+datas = [
+    (pyqt_data[0][i][0], pyqt_data[0][i][1]) for i in range(len(pyqt_data[0]))
+]
+binaries = [
+    (pyqt_data[1][i][0], pyqt_data[1][i][1]) for i in range(len(pyqt_data[1]))
+]
+hiddenimports = pyqt_data[2] + [
+    'PyQt5.QtCore',
+    'PyQt5.QtGui',
+    'PyQt5.QtWidgets',
+    'winocr',
+    'winrt',
+    'PIL',
+    'PIL.Image',
+    'pyperclip',
+    'pynput',
+    'pynput.keyboard',
+    'configparser',
+]
 
 a = Analysis(
     ['one_sentence_ocr.py'],
@@ -21,7 +36,8 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
-pyz = PYZ(a.pure)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=None)
 
 exe = EXE(
     pyz,
@@ -42,4 +58,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=None,
 )
